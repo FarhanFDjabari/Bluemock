@@ -7,6 +7,7 @@ os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
 import asyncio
 import copy
 import math
+import time
 import regex
 from datetime import datetime, timezone
 
@@ -19,7 +20,9 @@ from bumble.transport import open_transport
 from . import __version__
 from .advertising import advertising_data, device_address
 from .expr import compile_expression
-from .limits import MAX_MATCH_INPUT, REGEX_TIMEOUT_S, check_state
+from .limits import (INDICATION_TIMEOUT_S, MAX_MATCH_INPUT, MAX_PENDING_WRITES,
+                     MAX_PENDING_WRITE_BYTES, REGEX_TIMEOUT_S,
+                     WRITE_WARNING_INTERVAL_S, check_state)
 from .local_radio import close_local_device, create_local_device
 from .params import check_params
 from .schema import to_dict
@@ -48,6 +51,9 @@ class Engine:
         self._payloads = {}
         self._sets = {}
         self._rules = []
+        self._pending_writes = self._pending_write_bytes = self._dropped_writes = 0
+        self._last_write_warning = -math.inf
+        self._write_warning_timer = None
         for index, rule in enumerate(definition.rules):
             self._rules.append((index, rule, regex.compile(rule.regex, regex.VERSION0) if rule.regex is not None else None))
             self._compile_set(rule)
@@ -210,10 +216,41 @@ class Engine:
         if "notify" in char.properties:
             await self.device.notify_subscribers(self.gatt[cid], value)
         if "indicate" in char.properties:
-            await self.device.indicate_subscribers(self.gatt[cid], value)
+            try:
+                await asyncio.wait_for(self.device.indicate_subscribers(self.gatt[cid], value),
+                                       INDICATION_TIMEOUT_S)
+            except asyncio.TimeoutError as exc:
+                raise ValueError(f"Indication on {cid} timed out after {INDICATION_TIMEOUT_S:g}s") from exc
         self._wire_event("tx", cid, value, source=source, **({"ref": ref} if ref is not None else {}))
 
+    def _warn_write_drops(self):
+        self._write_warning_timer = None
+        if self._dropped_writes:
+            dropped, self._dropped_writes = self._dropped_writes, 0
+            self._last_write_warning = time.monotonic()
+            self.emit("log", level="warning", dropped=dropped,
+                      message=f"Dropped {dropped} BLE writes: pending write budget exceeded")
+
+    def _drop_write(self):
+        self._dropped_writes += 1
+        remaining = WRITE_WARNING_INTERVAL_S - (time.monotonic() - self._last_write_warning)
+        if remaining <= 0:
+            if self._write_warning_timer:
+                self._write_warning_timer.cancel()
+            self._warn_write_drops()
+        elif self._write_warning_timer is None:
+            self._write_warning_timer = asyncio.get_running_loop().call_later(remaining, self._warn_write_drops)
+
     async def handle_write(self, cid, value):
+        # Admission is synchronous: rejected callbacks never wait on the lock.
+        if self._stopping or self.shutdown.is_set():
+            return False
+        if (self._pending_writes >= MAX_PENDING_WRITES or
+                self._pending_write_bytes + len(value) > MAX_PENDING_WRITE_BYTES):
+            self._drop_write()
+            return False
+        self._pending_writes += 1
+        self._pending_write_bytes += len(value)
         try:
             async with self._lock:
                 self._wire_event("rx", cid, value)
@@ -239,6 +276,9 @@ class Engine:
         except Exception as exc:
             self.error(exc)
             return False
+        finally:
+            self._pending_writes -= 1
+            self._pending_write_bytes -= len(value)
 
     async def run_action(self, action_id, params=None):
         try:
@@ -316,6 +356,9 @@ class Engine:
         if self._stopping or self._stopped:
             return
         self._stopping = True
+        if self._write_warning_timer:
+            self._write_warning_timer.cancel()
+            self._write_warning_timer = None
         self.shutdown.set()
         for task in self._restart_tasks:
             task.cancel()

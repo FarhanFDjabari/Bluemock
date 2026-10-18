@@ -1,7 +1,6 @@
 """Version 1 JSON-lines IPC; imports the radio only after isolating stdout."""
 
 import asyncio
-import contextvars
 import copy
 import json
 import logging
@@ -9,78 +8,9 @@ import math
 import os
 import signal
 import sys
-import threading
 from dataclasses import replace
-from datetime import datetime, timezone
-
-
-_command_context = contextvars.ContextVar("bluemock_ipc_command", default=None)
-
-
-def _event(kind, **fields):
-    return {"ts": datetime.now(timezone.utc).isoformat(), "event": kind, **fields}
-
-
-class EventWriter:
-    def __init__(self, stream):
-        self.stream = stream
-        self.stopped = self.broken = False
-        self.final_event = None
-        self.fatal = False
-        self.last_error = None
-        self.on_disconnect = None
-        self._lock = threading.RLock()
-
-    def __call__(self, event):
-        if self.stopped or self.broken:
-            return
-        if event["event"] == "stopped":
-            self.final_event = dict(event)
-            return
-        self._write(event)
-
-    def _write(self, event):
-        with self._lock:
-            self._write_locked(event)
-
-    def _write_locked(self, event):
-        if self.stopped or self.broken:
-            return
-        event = dict(event)
-        context = _command_context.get()
-        if context and context[0] and (event["event"] == "error" or
-                                      (event["event"] == "state" and context[2] == "state")):
-            event["reply_to"] = context[1]
-        try:
-            line = json.dumps(event, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-        except (ValueError, TypeError, RecursionError) as exc:
-            event = _event("error", message=f"Cannot serialize {event.get('event')} event: {exc}", fatal=False)
-            if context and context[0]:
-                event["reply_to"] = context[1]
-            try:
-                line = json.dumps(event, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-            except (ValueError, TypeError, RecursionError):
-                event.pop("reply_to", None)
-                line = json.dumps(event, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-        # Keep Unicode intact, escaping only isolated surrogates from raw writes.
-        line = line.encode("utf-8", errors="backslashreplace").decode("utf-8")
-        try:
-            self.stream.write(line + "\n")
-            self.stream.flush()
-        except (BrokenPipeError, OSError, ValueError):
-            self.broken = True
-            if self.on_disconnect:
-                self.on_disconnect()
-            return
-        if event["event"] == "stopped":
-            self.stopped = True
-        elif event["event"] == "error":
-            self.fatal = self.fatal or event.get("fatal", False)
-            self.last_error = event["message"]
-
-    def finish(self):
-        """Flush stopped after engine cleanup and any fatal status correction."""
-        self._write(self.final_event or _event("stopped"))
+from .ipc_writer import EventWriter, _command_context, _event
+from .limits import MAX_DEFINITION_BYTES
 
 
 class EventLogHandler(logging.Handler):
@@ -148,7 +78,7 @@ async def dispatch_command(engine, command):
 
 
 async def _read_commands(engine):
-    reader = asyncio.StreamReader(limit=1024 * 1024)
+    reader = asyncio.StreamReader(limit=MAX_DEFINITION_BYTES)
     protocol = asyncio.StreamReaderProtocol(reader)
     pipe = None
     try:
@@ -212,6 +142,7 @@ async def run_ipc(definition, transport_spec=None, name_override=None):
     failed = False
     loop = asyncio.get_running_loop()
     try:
+        await writer.start()
         # These imports may load Bumble or grpc: keep them inside isolation.
         from .engine import Engine
         if name_override is not None:
@@ -256,7 +187,7 @@ async def run_ipc(definition, transport_spec=None, name_override=None):
         finally:
             if failed and not writer.fatal:
                 writer(_event("error", message=writer.last_error or "Engine failed during shutdown", fatal=True))
-            writer.finish()
+            await writer.finish()
             for sig, (previous, using_loop) in previous_signals.items():
                 if using_loop:
                     loop.remove_signal_handler(sig)
@@ -265,4 +196,4 @@ async def run_ipc(definition, transport_spec=None, name_override=None):
             root.setLevel(saved_level)
             handler.close()
             sys.stdout = real_stdout
-    return 1 if failed else 0
+    return 1 if failed or writer.overloaded else 0

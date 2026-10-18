@@ -9,23 +9,59 @@ import sys
 from contextlib import nullcontext
 
 from .schema import RESERVED_ACTION_IDS
+from .limits import REPL_EVENT_WINDOW_S, REPL_MAX_EVENTS_PER_S
 
 
-def event_printer(engine):
-    def output(event):
+class EventPrinter:
+    def __init__(self, engine):
+        self.engine = engine
+        self.loop = asyncio.get_running_loop()
+        self.started = self.loop.time()
+        self.printed = self.suppressed = 0
+        self.timer = None
+
+    def _summary(self):
+        self.timer = None
+        if self.suppressed:
+            print(f"… {self.suppressed} events suppressed", flush=True)
+            self.suppressed = 0
+        self.started = self.loop.time()
+        self.printed = 0
+
+    def __call__(self, event):
+        elapsed = self.loop.time() - self.started
+        if elapsed >= REPL_EVENT_WINDOW_S:
+            if self.timer:
+                self.timer.cancel()
+            self._summary()
+            elapsed = 0
+        if self.printed >= REPL_MAX_EVENTS_PER_S:
+            self.suppressed += 1
+            if self.timer is None:
+                self.timer = self.loop.call_later(REPL_EVENT_WINDOW_S - elapsed, self._summary)
+            return
+        self.printed += 1
         kind = event["event"]
         fields = {key: value for key, value in event.items() if key not in ("ts", "event")}
         if kind == "ready":
-            detail = f"{engine.definition.name} ({event['transport']})"
+            detail = f"{self.engine.definition.name} ({event['transport']})"
         elif kind in ("rx", "tx"):
             cid = event["characteristic"]
-            char = engine.characteristics[cid]
+            char = self.engine.characteristics[cid]
             text = repr(event["text"]) + " " if char.encoding != "hex" and "text" in event else ""
             detail = f"{cid}: {text}[{event['hex']}]"
         else:
             detail = " ".join(f"{key}={value!r}" for key, value in fields.items())
         print(f"{event['ts'][11:19]} {kind}: {detail}", flush=True)
-    return output
+
+    def close(self):
+        if self.timer:
+            self.timer.cancel()
+        self._summary()
+
+
+def event_printer(engine):
+    return EventPrinter(engine)
 
 
 def _assignments(text):
@@ -187,10 +223,14 @@ async def run_repl(engine):
 async def run(definition, transport_spec=None):
     from .engine import Engine
     engine = Engine(definition, transport_spec)
-    engine.on_event = event_printer(engine)
+    printer = event_printer(engine)
+    engine.on_event = printer
     try:
         if await engine.start():
             await run_repl(engine)
     finally:
-        await engine.stop()
+        try:
+            await engine.stop()
+        finally:
+            printer.close()
     return 1 if engine.failed else 0

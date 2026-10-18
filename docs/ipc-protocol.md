@@ -8,7 +8,7 @@ in-process radio and requires no emulator.
 
 Both directions use UTF-8 JSON lines: exactly one JSON object per line, ending
 with a newline. Literal newlines inside strings must use JSON escapes. Each
-stdout event is flushed immediately. Blank input lines are malformed commands,
+stdout event is queued for prompt delivery. Blank input lines are malformed commands,
 not keepalives. Input lines are limited to 1 MiB; oversized lines produce a
 nonfatal error and the reader resumes at the next line.
 
@@ -21,6 +21,28 @@ drain both pipes. `GRPC_VERBOSITY=ERROR` is set before importing the radio stack
 JSON numbers must be finite. Nonstandard NaN/Infinity constants are rejected.
 Commands execute sequentially. Events from the radio may arrive independently
 of commands. Clients must keep reading stdout while sending commands.
+
+Output pipes/sockets use an asyncio nonblocking writer with a bounded queue;
+stdout backpressure does not block the loop that reads stdin and handles
+SIGTERM. Regular-file and terminal redirection drain the same bounded queue
+directly. The budgets in `bluemock.limits` are:
+
+| Constant | Limit | Meaning |
+| --- | --- | --- |
+| `MAX_IPC_QUEUE_EVENTS` | 1000 | Pending output records, including the in-flight record |
+| `MAX_IPC_QUEUE_BYTES` | 4 MiB | Serialized UTF-8 JSON bytes, including newlines and the in-flight record |
+| `IPC_WRITE_CHUNK_BYTES` | 16 KiB | Maximum chunk submitted to the pipe transport at once |
+| `IPC_SHUTDOWN_DRAIN_S` | 2 seconds | Maximum output drain/close time after engine cleanup |
+| `MAX_PENDING_WRITES` | 64 | Admitted BLE write callbacks, including the active callback and lock waiters |
+| `MAX_PENDING_WRITE_BYTES` | 64 KiB | Total payload bytes retained by admitted write callbacks |
+| `WRITE_WARNING_INTERVAL_S` | 1 second | Minimum interval between coalesced BLE admission warnings |
+| `INDICATION_TIMEOUT_S` | 5 seconds | Maximum wait for each indication send; timeout is a non-fatal error |
+| `REPL_MAX_EVENTS_PER_S` | 50 | Printed events per `REPL_EVENT_WINDOW_S` window in interactive and piped REPL mode |
+| `REPL_EVENT_WINDOW_S` | 1 second | REPL event window; excess output becomes one `… N events suppressed` summary, with a final pending summary at exit |
+
+Excess BLE writes are dropped before waiting for the engine lock and produce
+rate-limited `log` warnings with a `dropped` count. IPC output saturation and
+its additive `overflow` event are described below.
 
 ## Common event fields
 
@@ -101,6 +123,10 @@ only subscribed centrals receive notifications/indications.
 Field: `values` (complete current state object), optional `reply_to` for a
 correlated `state` command. Emitted after state updates and on explicit request.
 State changes made by rules/actions are events, not acknowledgments.
+Queued state snapshots are coalesced to the latest snapshot. A pending state
+reply can therefore be superseded by a newer state event during a burst;
+clients requiring correlation should await each state reply before requesting
+another snapshot.
 
 ```json
 {"ts":"2026-10-18T07:00:01+00:00","event":"state","values":{"battery":2,"tag":"ABC"},"reply_to":"read-state-1"}
@@ -120,10 +146,39 @@ are JSON-escaped and do not create additional physical lines.
 Fields: `message`, `fatal` (boolean), optional `reply_to`. Fatal false leaves the
 session usable. Fatal true means the engine/session is shutting down and exits
 with status 1. A fatal startup error can occur before ready.
+Identical queued errors with the same correlation and fatal flag may be
+coalesced; optional `count` is the number of occurrences represented by that
+record (absent means one).
 
 ```json
 {"ts":"2026-10-18T07:00:01+00:00","event":"error","message":"Unknown command: nope","fatal":false,"reply_to":"request-2"}
 ```
+
+### overflow
+
+Field: `dropped` (positive integer). This additive v1 event reports how many
+`rx`, `tx`, and `log` output records were discarded since the last overflow
+report. It is emitted once queue space returns; further drops accumulate for
+the next report. The timestamp describes the report time.
+
+```json
+{"ts":"2026-10-18T07:00:02+00:00","event":"overflow","dropped":123}
+```
+
+When the output queue fills, new traffic records (`rx`/`tx`/`log`) may be
+dropped. Protected records first coalesce older queued state snapshots and
+identical errors where applicable, then evict queued traffic records as needed.
+`ready`, `error`, `state`, and `stopped` are never chosen as traffic-drop
+candidates. Records already being written cannot be coalesced or evicted.
+
+If a protected record still cannot fit (including a single record over the byte
+budget), the session ends rather than growing memory without bound: one clear
+overload message is written to stderr, pending output is discarded, normal
+engine cleanup runs, and the process exits 1. Only the final `stopped` record
+is retained if capacity permits, subject to the same two-second output drain
+deadline. An unread pipe can prevent even that final record from being delivered.
+This exceptional overload shutdown is distinct from ordinary traffic loss,
+which keeps the session running and reports `overflow`.
 
 ### stopped
 
@@ -226,6 +281,12 @@ Graceful shutdown exits 0 unless an engine or cleanup failure occurred. Clients
 should wait for stopped and process exit, while continuing to drain both pipes.
 If stdout is closed by the client, delivery of the final event is impossible;
 the process still attempts cleanup without printing a traceback.
+If stdout remains open but is not read, the event loop still processes stop,
+EOF, and termination signals. After engine cleanup, output drains for at most
+`IPC_SHUTDOWN_DRAIN_S` (2 seconds), then the transport is aborted and remaining
+output discarded. This output deadline alone does not make a normal shutdown
+an error. The final `stopped` event may be undelivered, and a stalled consumer
+must tolerate a truncated trailing record when the drain deadline expires.
 
 Protocol version is ready.v, currently 1, and is independent of the CLI package
 version. Adding event types or fields is non-breaking. Clients **must ignore
