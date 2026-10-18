@@ -23,6 +23,9 @@ final class DeviceStore {
     @ObservationIgnored private var didStartAutostart = false
     @ObservationIgnored private var hasLoadedDevices = false
 
+    @ObservationIgnored private var reloading = false
+    @ObservationIgnored private var reloadPending = false
+
     private init() {}
     var hasRunningDevice: Bool { processes.values.contains { $0.isRunning } }
     var installCommand: String { "scripts/install.sh" }
@@ -42,14 +45,13 @@ final class DeviceStore {
             let directory = URL(fileURLWithPath: paths.device_dir, isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             deviceDirectory = directory
-            async let rows = CLIRunner.devicesList(using: cli)
+            loadError = nil
+            await reloadDevices()
             async let available = CLIRunner.presetsList(using: cli)
-            devices = try await rows
             presets = (try? await available) ?? presets
             syncProcesses()
             installWatcher(directory)
             await refreshDoctor(force: forceDoctor)
-            loadError = nil
             hasLoadedDevices = true
         } catch { loadError = error.localizedDescription; hasLoadedDevices = true }
     }
@@ -101,10 +103,18 @@ final class DeviceStore {
     }
 
     func markNeedsRestart(_ id: String, previousID: String? = nil) {
+        if let previousID, previousID != id {
+            guard processes[id] == nil, sessions[id] == nil else {
+                loadError = "A device or session with id '\(id)' already exists."
+                return
+            }
+        }
         if let previousID, previousID != id, let process = processes.removeValue(forKey: previousID) {
             processes[id] = process
-            if let session = sessions.removeValue(forKey: previousID) { sessions[id] = session }
             if restartRequired.remove(previousID) != nil { restartRequired.insert(id) }
+        }
+        if let previousID, previousID != id, let session = sessions.removeValue(forKey: previousID) {
+            sessions[id] = session
         }
         if processes[id]?.isRunning == true { restartRequired.insert(id) }
     }
@@ -137,17 +147,36 @@ final class DeviceStore {
     }
 
     func reloadDevices() async {
-        guard let cli else { return }
-        do { devices = try await CLIRunner.devicesList(using: cli); syncProcesses() }
-        catch { loadError = error.localizedDescription }
+        guard let cli, !Task.isCancelled else { return }
+        guard !reloading else { reloadPending = true; return }
+        reloading = true
+        defer { reloading = false }
+        repeat {
+            reloadPending = false
+            do { devices = try await CLIRunner.devicesList(using: cli); syncProcesses() }
+            catch { loadError = error.localizedDescription }
+        } while reloadPending && !Task.isCancelled
     }
 
     private func syncProcesses() {
-        let finished = processes.filter { !$0.value.isRunning && $0.value.status == .stopped }.map(\.key)
+        let ids = Set(devices.map(\.id))
+        let finished = processes.filter {
+            !$0.value.isRunning && ($0.value.status == .stopped || !ids.contains($0.key))
+        }.map(\.key)
         for id in finished {
             processes[id]?.session.clearPendingCommands()
             processes.removeValue(forKey: id)
         }
+        sessions = sessions.filter { ids.contains($0.key) || processes[$0.key]?.isRunning == true }
+        restartRequired = restartRequired.filter { ids.contains($0) || processes[$0]?.isRunning == true }
+    }
+
+    func idIsAvailable(_ id: String, excludingPath: String?) -> Bool {
+        let path = excludingPath.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        if devices.contains(where: { $0.id == id && URL(fileURLWithPath: $0.path).standardizedFileURL.path != path }) { return false }
+        if let process = processes[id],
+           URL(fileURLWithPath: process.definitionPath).standardizedFileURL.path != path { return false }
+        return true
     }
 
     private func installWatcher(_ directory: URL) {
@@ -161,8 +190,10 @@ final class DeviceStore {
             guard let self else { return }
             self.reloadTask?.cancel()
             self.reloadTask = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(300))
-                await self.reloadDevices()
+                do { try await Task.sleep(for: Limits.reloadDebounce) }
+                catch { return }
+                guard !Task.isCancelled else { return }
+                Task { await self.reloadDevices() }
             }
         }
         source.setCancelHandler { close(fd) }

@@ -12,10 +12,14 @@ private nonisolated final class ProcessCapture: @unchecked Sendable {
     private var completion: ((Result<CLIRunner.Result, Error>) -> Void)?
 
     init(completion: @escaping (Result<CLIRunner.Result, Error>) -> Void) { self.completion = completion }
-    func append(_ data: Data, toOutput: Bool) {
+    func append(_ data: Data, toOutput: Bool) -> Bool {
         lock.lock()
+        guard !finished else { lock.unlock(); return true }
+        let count = toOutput ? output.count : error.count
+        guard data.count <= Limits.maxCaptureBytes - count else { lock.unlock(); return false }
         if toOutput { output.append(data) } else { error.append(data) }
         lock.unlock()
+        return true
     }
     func end(output streamIsOutput: Bool) {
         lock.lock()
@@ -84,7 +88,11 @@ enum CLIRunner {
                         file.readabilityHandler = nil
                         capture.end(output: output)
                     } else {
-                        capture.append(data, toOutput: output)
+                        if !capture.append(data, toOutput: output) {
+                            capture.fail(CLIRunnerError.commandFailed("CLI output exceeds the 8 MiB per-stream limit."))
+                            ProcessStop.schedule(process)
+                            if process.isRunning { kill(process.processIdentifier, SIGTERM) }
+                        }
                     }
                 }
             }
@@ -93,6 +101,13 @@ enum CLIRunner {
             process.terminationHandler = { child in capture.terminated(child.terminationStatus) }
             do {
                 try process.run()
+                DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                    guard process.isRunning else { return }
+                    process.terminate()
+                    DispatchQueue.global().asyncAfter(deadline: .now() + Limits.captureKillSeconds) {
+                        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                    }
+                }
                 if let stdin {
                     try input.fileHandleForWriting.write(contentsOf: stdin)
                 }
@@ -100,19 +115,12 @@ enum CLIRunner {
             } catch {
                 if process.isRunning {
                     process.terminate()
-                    DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + Limits.captureKillSeconds) {
                         if process.isRunning { kill(process.processIdentifier, SIGKILL) }
                     }
                 }
                 capture.fail(error)
                 return
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-                guard process.isRunning else { return }
-                process.terminate()
-                DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
-                    if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-                }
             }
         }
     }

@@ -196,6 +196,10 @@ struct EditorWindow: View {
             issues = [EditorValidationIssue(path: "id", message: "Use letters, numbers, dots, underscores or hyphens for the file name.")]
             return
         }
+        guard store.idIsAvailable(definition.id, excludingPath: existingPath) else {
+            issues = [EditorValidationIssue(path: "id", message: "Another device already uses this id.")]
+            return
+        }
         isBusy = true
         defer { isBusy = false }
         let path: String
