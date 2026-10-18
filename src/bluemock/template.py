@@ -4,6 +4,7 @@ import ast
 import re
 from dataclasses import asdict, dataclass, is_dataclass
 
+from .limits import MAX_FORMAT_WIDTH
 from .expr import (Expression, ExpressionError, compile_expression,
                    expression_names, unknown_name_messages)
 
@@ -19,6 +20,23 @@ INTEGER_SEGMENTS = {
     "i16le": (2, "little", True), "i16be": (2, "big", True),
     "i32le": (4, "little", True), "i32be": (4, "big", True),
 }
+
+
+_FORMAT_SPEC = re.compile(
+    r"(?:(?P<fill>[^{}])?[<>=^])?[+ -]?z?\#?0?(?P<width>[0-9]+)?"
+    r"[_,]?(?:\.(?P<precision>[0-9]+))?[bcdeEfFgGnosxX%]?"
+)
+
+
+def _check_format_spec(spec):
+    match = _FORMAT_SPEC.fullmatch(spec)
+    if match is None:
+        raise PayloadError(f"Invalid format specifier: {spec!r}")
+    for name in ("width", "precision"):
+        digits = (match.group(name) or "0").lstrip("0") or "0"
+        maximum = str(MAX_FORMAT_WIDTH)
+        if len(digits) > len(maximum) or (len(digits) == len(maximum) and digits > maximum):
+            raise PayloadError(f"Format {name} exceeds {MAX_FORMAT_WIDTH}")
 
 
 def _unescape(text):
@@ -107,6 +125,7 @@ def parse_template(source: str) -> Template:
             raise PayloadError("Unclosed '{' in template")
         expression = compile_expression(source[start:colon if colon is not None else index])
         spec = source[colon + 1:index] if colon is not None else ""
+        _check_format_spec(spec)
         # No runtime names are needed to reject an invalid standard format spec.
         for sample in (0, 0.0, ""):
             try:

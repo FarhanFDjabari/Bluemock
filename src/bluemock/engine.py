@@ -7,7 +7,7 @@ os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
 import asyncio
 import copy
 import math
-import re
+import regex
 from datetime import datetime, timezone
 
 from bumble.device import Device
@@ -19,6 +19,7 @@ from bumble.transport import open_transport
 from . import __version__
 from .advertising import advertising_data, device_address
 from .expr import compile_expression
+from .limits import MAX_MATCH_INPUT, REGEX_TIMEOUT_S, check_state
 from .local_radio import close_local_device, create_local_device
 from .params import check_params
 from .schema import to_dict
@@ -32,6 +33,7 @@ class Engine:
         self.transport_spec = transport_spec or f"android-netsim:name={definition.name}"
         self.on_event = on_event or (lambda event: None)
         self.state = copy.deepcopy(definition.state)
+        check_state(self.state)
         self.characteristics = {c.id: c for s in definition.services for c in s.characteristics}
         self.actions = {a.id: a for a in definition.actions}
         self.address = device_address(definition)
@@ -47,7 +49,7 @@ class Engine:
         self._sets = {}
         self._rules = []
         for index, rule in enumerate(definition.rules):
-            self._rules.append((index, rule, re.compile(rule.regex) if rule.regex is not None else None))
+            self._rules.append((index, rule, regex.compile(rule.regex, regex.VERSION0) if rule.regex is not None else None))
             self._compile_set(rule)
             if rule.reply:
                 self._payloads[id(rule.reply)] = parse_payload(rule.reply)
@@ -191,8 +193,13 @@ class Engine:
     def _apply_set(self, owner, scope):
         updates = {key: expression.evaluate(scope) for key, expression in self._sets[id(owner)].items()}
         if updates:
-            self.state.update(updates)
-            self.emit("state", values=copy.deepcopy(self.state))
+            self._commit_state(updates)
+
+    def _commit_state(self, updates):
+        candidate = {**self.state, **updates}
+        check_state(candidate)
+        self.state = candidate
+        self.emit("state", values=copy.deepcopy(self.state))
 
     async def _send(self, cid, value, source, ref=None):
         char = self.characteristics.get(cid)
@@ -215,7 +222,11 @@ class Engine:
                     if rule.on_write != cid:
                         continue
                     matched_text = text.strip() if rule.trim else text
-                    match = regex.search(matched_text) if regex else None
+                    try:
+                        match = regex.search(matched_text[:MAX_MATCH_INPUT], timeout=REGEX_TIMEOUT_S) if regex else None
+                    except TimeoutError:
+                        self.error(f"Rule {index} regex timed out after {REGEX_TIMEOUT_S:g}s")
+                        continue
                     if not (rule.any or (rule.equals is not None and rule.equals == matched_text) or match):
                         continue
                     extras = {"value": value, "text": text, **(match.groupdict() if match else {})}
@@ -273,8 +284,7 @@ class Engine:
                     updates = copy.deepcopy(values)
                 else:
                     updates = {key: compile_expression(value).evaluate(self.state) for key, value in values.items()}
-                self.state.update(updates)
-                self.emit("state", values=copy.deepcopy(self.state))
+                self._commit_state(updates)
             return True
         except Exception as exc:
             self.error(exc)
@@ -282,6 +292,7 @@ class Engine:
 
     async def reset_state(self):
         async with self._lock:
+            check_state(self.definition.state)
             self.state = copy.deepcopy(self.definition.state)
             self.emit("state", values=copy.deepcopy(self.state))
 

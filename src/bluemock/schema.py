@@ -7,7 +7,6 @@ Explicit and derived Bluetooth addresses are random static addresses on every
 transport, never public addresses.
 """
 
-import json
 import keyword
 import math
 import re
@@ -17,7 +16,9 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+import regex
 
+from .limits import BudgetError, check_nesting, check_state, read_definition
 from .expr import (ExpressionError, compile_expression,
                    expression_names, unknown_name_messages)
 from .template import check_payload
@@ -138,6 +139,10 @@ def normalize_uuid(value) -> str:
 def validate(data, stem="device") -> list[ValidationIssue]:
     if isinstance(data, Definition):
         data = to_dict(data)
+    try:
+        check_nesting(data)
+    except BudgetError as exc:
+        return [ValidationIssue("$", str(exc))]
     errors = []
     def error(path, message):
         errors.append(ValidationIssue(path or "$", message))
@@ -193,6 +198,10 @@ def validate(data, stem="device") -> list[ValidationIssue]:
             expression(expr, path + "." + str(key), scope)
     data = obj(data, "$")
     state = obj(data.get("state", {}), "state")
+    try:
+        check_state(state)
+    except (ValueError, TypeError, RecursionError) as exc:
+        error("$", str(exc))
     state_keys = {key for key in state if isinstance(key, str)}
     if type(data.get("bluemock")) is not int or data.get("bluemock") != 1:
         error("bluemock", "Required schema version is 1")
@@ -270,8 +279,8 @@ def validate(data, stem="device") -> list[ValidationIssue]:
                 text(rule[key], path + "." + key)
         if isinstance(rule.get("regex"), str):
             try:
-                scope.update(re.compile(rule["regex"]).groupindex)
-            except re.error as exc:
+                scope.update(regex.compile(rule["regex"], regex.VERSION0).groupindex)
+            except (regex.error, RecursionError) as exc:
                 error(path + ".regex", str(exc))
         if "any" in rule and rule["any"] is not True:
             error(path + ".any", "Expected true")
@@ -365,11 +374,12 @@ def parse_definition(data, stem="device") -> Definition:
 
 def load(path) -> Definition:
     try:
-        source = path.read_text(encoding="utf-8") if hasattr(path, "read_text") else Path(path).read_text(encoding="utf-8")
-        data = json.loads(source) if str(path).lower().endswith(".json") else yaml.safe_load(source)
-    except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
+        path = path if hasattr(path, "open") else Path(path)
+        return parse_definition(read_definition(path), Path(str(path)).stem)
+    except ValidationError:
+        raise
+    except (OSError, UnicodeError, ValueError, RecursionError, yaml.YAMLError) as exc:
         raise ValidationError([ValidationIssue("$", str(exc))]) from exc
-    return parse_definition(data, Path(str(path)).stem)
 
 
 def to_dict(definition: Definition) -> dict:

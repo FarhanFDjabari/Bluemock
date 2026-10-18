@@ -40,6 +40,32 @@ GUI clients must not require every optional field in normalized JSON. Omit
 optional fields rather than supplying null. Use only documented fields;
 unsupported fields may be discarded during normalization.
 
+## Input and runtime limits
+
+Budgets are named in `bluemock.limits`. Violations produce user-facing validation
+errors or non-fatal runtime error events; rejected state updates leave all state
+unchanged.
+
+| Budget | Limit | Behavior |
+| --- | --- | --- |
+| `MAX_DEFINITION_BYTES` | 1 MiB (1,048,576 bytes) | Definition files are checked with stat before reading and read with a byte cap; `save` stdin JSON has the same cap |
+| `MAX_NESTING_DEPTH` | 64 collection levels | YAML/JSON objects and arrays count toward depth; excessive depth is a validation error at `$` |
+| `MAX_FORMAT_WIDTH` | 4096 | Both template width and precision are checked before probing or rendering a format spec |
+| `MAX_STRING_LENGTH` | 65,536 characters/bytes | String and byte multiplication/concatenation are checked before allocating; byte and string binary results share the cap |
+| `MAX_STATE_VALUE_BYTES` | 65,536 bytes | Each string state value is measured in UTF-8 bytes; runtime byte values are measured as raw bytes |
+| `MAX_STATE_TOTAL_BYTES` | 1 MiB (1,048,576 bytes) | Entire state, including keys and JSON punctuation, measured as compact JSON encoded in UTF-8; runtime byte values count as hex strings for this accounting |
+| `MAX_INT_BITS` | 4096 bits | Integer binary results and stored state integers are limited |
+| `MAX_EXPONENT` | 64 | Absolute exponent magnitude is limited |
+| `MAX_MATCH_INPUT` | 4096 characters | Regex search sees only the first 4096 characters after optional trim; `text` and `value` in expression scope remain unchanged |
+| `REGEX_TIMEOUT_S` | 0.05 seconds per rule | A timed-out search emits a non-fatal error naming the zero-based rule index, counts as a non-match, and processing continues with the next rule |
+
+YAML anchors (`&name`), aliases (`*name`), and merge keys (`<<`) are not supported;
+write repeated fields explicitly. They are rejected before merge expansion.
+JSON nesting is checked before decoding, so deeply nested input yields a normal
+validation error instead of a traceback. State checks apply to initial state,
+rule/action assignments, and manual `set` updates. All assignments in one update
+are accepted or rejected together.
+
 ## General fields
 
 | Key | Type | Default | Constraints / meaning |
@@ -121,7 +147,7 @@ process stops. Prefer distinct state, parameter and regex-group names.
 | --- | --- | --- | --- |
 | `on_write` | characteristic id | required | Writable target |
 | `equals` | string | omitted | Exact comparison after optional trim |
-| `regex` | string | omitted | Compiled Python regex, matched using search |
+| `regex` | string | omitted | Compiled with the `regex` package in VERSION0 compatibility mode, matched using bounded search |
 | `any` | boolean | omitted | Must be true; matches every write on target |
 | `trim` | boolean | true | Strip whitespace/CRLF from the matching string |
 | `reply` | targeted payload | omitted | Sent after state assignments |
@@ -133,6 +159,7 @@ text is the original untrimmed string, and trim affects only matching. Regexes
 use search; anchor with ^ and $ for a full match. Named groups use
 `(?P<name>...)` and contain strings; unmatched optional groups can be None
 (use an expression such as `v or ''` when appropriate).
+Search input is truncated and searches time out as described in the limits table.
 
 All set values evaluate against one pre-write scope, then commit together.
 Reply renders with updated state plus the same write/group values. A rule
@@ -241,6 +268,9 @@ Random functions come from Python's random module. Attributes, subscripts,
 containers, lambdas, comprehensions, f-strings, keyword arguments and other
 calls are rejected. Exponent magnitude is capped at 64. Results of binary
 operations are limited to 4096-bit integers and 65536-character strings.
+Byte results have the same 65,536-byte limit. `%` is numeric modulo only:
+string/bytes `%` formatting is rejected with "string % formatting is not
+supported; use a template". Use `{expression:format_spec}` for formatting.
 
 All expressions/templates and variable names are checked before loading.
 Function call names need no state declaration. Convert regex groups with int

@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 requires-python = ">=3.10"
-dependencies = ["bumble[android]==0.0.236", "pyyaml>=6"]
+dependencies = ["bumble[android]==0.0.236", "pyyaml>=6", "regex==2026.9.29"]
 
 [project.urls]
 Homepage = "https://github.com/FarhanFDjabari/Bluemock"

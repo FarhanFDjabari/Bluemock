@@ -13,6 +13,7 @@ from pathlib import Path
 import yaml
 
 from . import __version__, paths, schema
+from .limits import read_stdin_json
 
 
 class Parser(argparse.ArgumentParser):
@@ -117,14 +118,14 @@ def _summary(path):
 
 def _save(args):
     try:
-        data = json.load(sys.stdin)
+        data = read_stdin_json(sys.stdin)
         definition = schema.parse_definition(data, Path(args.path).stem)
         content = _yaml(schema.to_dict(definition))
         _atomic_save(args.path, content)
     except schema.ValidationError as exc:
         _errors(exc.errors, args.json_errors)
         return 1
-    except (OSError, ValueError, UnicodeError, yaml.YAMLError) as exc:
+    except (OSError, ValueError, UnicodeError, RecursionError, yaml.YAMLError) as exc:
         _errors([schema.ValidationIssue("$", str(exc))], args.json_errors)
         return 1
     return 0
@@ -233,7 +234,7 @@ def main(argv=None) -> int:
         return _dispatch(_parser().parse_args(argv))
     except (KeyboardInterrupt, asyncio.CancelledError):
         return 0
-    except (OSError, ValueError, UnicodeError, yaml.YAMLError) as exc:
+    except (OSError, ValueError, UnicodeError, RecursionError, yaml.YAMLError) as exc:
         print(f"$: {exc}", file=sys.stderr)
         return 1
 

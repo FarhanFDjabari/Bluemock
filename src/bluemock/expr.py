@@ -7,13 +7,11 @@ import random
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from .limits import MAX_EXPONENT, MAX_INT_BITS, MAX_STRING_LENGTH
+
 
 class ExpressionError(ValueError):
     """An invalid expression or a failed evaluation."""
-
-
-MAX_STRING_LENGTH = 65536
-MAX_INT_BITS = 4096
 
 
 FUNCTIONS = {"abs": abs, "round": round, "int": int, "float": float, "str": str,
@@ -41,8 +39,8 @@ def _check(node):
         if isinstance(exponent, ast.UnaryOp) and isinstance(exponent.op, ast.USub):
             exponent = exponent.operand
         if isinstance(node.op, ast.Pow) and isinstance(exponent, ast.Constant):
-            if not isinstance(exponent.value, (int, float)) or abs(exponent.value) > 64:
-                raise ExpressionError("Exponent magnitude must not exceed 64")
+            if not isinstance(exponent.value, (int, float)) or abs(exponent.value) > MAX_EXPONENT:
+                raise ExpressionError(f"Exponent magnitude must not exceed {MAX_EXPONENT}")
     elif isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.Not)):
         _check(node.operand)
     elif isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
@@ -74,22 +72,27 @@ def _evaluate(node, scope):
         return scope[node.id]
     if isinstance(node, ast.BinOp):
         left, right = _evaluate(node.left, scope), _evaluate(node.right, scope)
+        if isinstance(node.op, ast.Mod) and isinstance(left, (str, bytes)):
+            raise ExpressionError("string % formatting is not supported; use a template")
         if isinstance(node.op, ast.Mult):
-            string, count = (left, right) if isinstance(left, str) else (right, left)
-            if isinstance(string, str) and isinstance(count, int):
-                if len(string) * max(count, 0) > MAX_STRING_LENGTH:
-                    raise ExpressionError(f"String result exceeds {MAX_STRING_LENGTH} characters")
+            sequence, count = (left, right) if isinstance(left, (str, bytes)) else (right, left)
+            if isinstance(sequence, (str, bytes)) and isinstance(count, int):
+                if len(sequence) * max(count, 0) > MAX_STRING_LENGTH:
+                    raise ExpressionError(f"Sequence result exceeds {MAX_STRING_LENGTH} characters/bytes")
+        if isinstance(node.op, ast.Add) and type(left) is type(right) and isinstance(left, (str, bytes)):
+            if len(left) + len(right) > MAX_STRING_LENGTH:
+                raise ExpressionError(f"Sequence result exceeds {MAX_STRING_LENGTH} characters/bytes")
         if isinstance(node.op, ast.Pow):
-            if not isinstance(right, (int, float)) or abs(right) > 64:
-                raise ExpressionError("Exponent magnitude must not exceed 64")
+            if not isinstance(right, (int, float)) or abs(right) > MAX_EXPONENT:
+                raise ExpressionError(f"Exponent magnitude must not exceed {MAX_EXPONENT}")
             if isinstance(left, (int, float)) and abs(left) > 1:
                 if abs(right) * math.log2(abs(left)) > MAX_INT_BITS:
                     raise ExpressionError(f"Power result exceeds {MAX_INT_BITS} bits")
         result = BINARY[type(node.op)](left, right)
         if isinstance(result, int) and result.bit_length() > MAX_INT_BITS:
             raise ExpressionError(f"Integer result exceeds {MAX_INT_BITS} bits")
-        if isinstance(result, str) and len(result) > MAX_STRING_LENGTH:
-            raise ExpressionError(f"String result exceeds {MAX_STRING_LENGTH} characters")
+        if isinstance(result, (str, bytes)) and len(result) > MAX_STRING_LENGTH:
+            raise ExpressionError(f"Sequence result exceeds {MAX_STRING_LENGTH} characters/bytes")
         return result
     if isinstance(node, ast.UnaryOp):
         value = _evaluate(node.operand, scope)
