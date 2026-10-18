@@ -8,3 +8,4 @@ dist/
 apps/macos/build/
 DerivedData/
 xcuserdata/
+.claude/
