@@ -12,7 +12,7 @@ services:
         uuid: FFE1
         properties: [notify, write_without_response]
 
-# Defaults match the Swift simulator; measurement windows use gauge units.
+# Measurement windows use gauge units.
 state:
   tread_mm: 7.5
   pressure_psi: 32.0

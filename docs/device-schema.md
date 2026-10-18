@@ -245,7 +245,7 @@ operations are limited to 4096-bit integers and 65536-character strings.
 All expressions/templates and variable names are checked before loading.
 Function call names need no state declaration. Convert regex groups with int
 before arithmetic. Python round uses ties-to-even; the Lematec/Shahe presets
-use arithmetic for half-away rounding to match the Swift simulator wire format.
+use arithmetic for half-away-from-zero rounding, as the gauge firmware does.
 
 | Location | Available scope |
 | --- | --- |

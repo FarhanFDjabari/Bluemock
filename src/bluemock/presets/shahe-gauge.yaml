@@ -25,7 +25,7 @@ actions:
         - {u8: 2}
         - {u8: 1}
         - {u8: 1}
-        # Non-negative magnitude rounds half ties up, mirroring Swift .rounded().
+        # Non-negative magnitude rounds half ties up.
         - {u32be: "int(abs(mm) * 100 + 0.5)"}
         - {u8: "1 if mm < 0 else 0"}
 
@@ -39,7 +39,7 @@ tests:
     action: tread
     params: {mm: 7.5}
     expect: {characteristic: measurement, hex: "02 01 01 00 00 02 EE 00"}
-  - name: Match Swift half-tie rounding
+  - name: Half ties round away from zero
     action: tread
     params: {mm: 0.125}
     expect: {characteristic: measurement, hex: "02 01 01 00 00 00 0D 00"}
