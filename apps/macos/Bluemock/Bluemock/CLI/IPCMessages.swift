@@ -1,12 +1,13 @@
 import Foundation
 
 nonisolated enum JSONValue: Codable, Equatable, Hashable, Sendable {
-    case string(String), number(Double), bool(Bool), object([String: JSONValue]), array([JSONValue]), null
+    case string(String), integer(Int), number(Double), bool(Bool), object([String: JSONValue]), array([JSONValue]), null
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if container.decodeNil() { self = .null }
         else if let value = try? container.decode(Bool.self) { self = .bool(value) }
+        else if let value = try? container.decode(Int.self) { self = .integer(value) }
         else if let value = try? container.decode(Double.self) { self = .number(value) }
         else if let value = try? container.decode(String.self) { self = .string(value) }
         else if let value = try? container.decode([String: JSONValue].self) { self = .object(value) }
@@ -17,6 +18,7 @@ nonisolated enum JSONValue: Codable, Equatable, Hashable, Sendable {
         var container = encoder.singleValueContainer()
         switch self {
         case .string(let value): try container.encode(value)
+        case .integer(let value): try container.encode(value)
         case .number(let value): try container.encode(value)
         case .bool(let value): try container.encode(value)
         case .object(let value): try container.encode(value)

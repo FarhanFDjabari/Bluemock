@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct DeviceRow: View {
     let device: DeviceSummary
@@ -7,6 +8,9 @@ struct DeviceRow: View {
     let stop: () -> Void
     let isExpanded: Bool
     let toggleExpanded: () -> Void
+    let restartNeeded: Bool
+    let restart: () -> Void
+    @Environment(\.openWindow) private var openWindow
 
     private var status: DeviceProcess.Status { process?.status ?? .stopped }
     private var tint: Color {
@@ -64,7 +68,22 @@ struct DeviceRow: View {
             .buttonStyle(.borderless)
             .disabled(!device.valid)
             .accessibilityLabel(process?.isRunning == true ? "Stop \(device.name)" : "Start \(device.name)")
+            if restartNeeded {
+                Button("Restart to apply", action: restart)
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Restart \(device.name) to apply saved changes")
+            }
         }
         .padding(.vertical, 7)
+        .contextMenu {
+            Button("Edit…") {
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: "editor", value: EditorLaunch.edit(path: device.path))
+            }
+            Button("Reveal in Finder") {
+                NSApp.activate(ignoringOtherApps: true)
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: device.path)])
+            }
+        }
     }
 }

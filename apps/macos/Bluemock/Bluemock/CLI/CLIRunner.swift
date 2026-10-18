@@ -51,6 +51,7 @@ private nonisolated final class ProcessCapture: @unchecked Sendable {
 enum CLIRunner {
     nonisolated struct Paths: Decodable, Sendable { let device_dir: String; let preset_dir: String; let version: String }
     nonisolated struct Preset: Decodable, Identifiable, Sendable { let id: String; let name: String; let description: String }
+    nonisolated struct ValidationResponse: Decodable, Sendable { let ok: Bool; let errors: [EditorValidationIssue] }
     nonisolated struct Result: Sendable {
         let exitCode: Int32
         let stdout: Data
@@ -138,6 +139,60 @@ enum CLIRunner {
         let result = try await run(executable: cli.executable, args: ["presets", "copy", id], path: cli.loginPath)
         guard result.exitCode == 0 else { throw CLIRunnerError.commandFailed(result.stderrText) }
         return result
+    }
+    nonisolated static func show(_ source: String, using cli: CLILocation) async throws -> DeviceDefinition {
+        try await json(DeviceDefinition.self, executable: cli.executable,
+                       args: ["show", source, "--json"], path: cli.loginPath)
+    }
+
+    nonisolated static func show(_ source: String, cli: CLILocation) async throws -> DeviceDefinition {
+        try await show(source, using: cli)
+    }
+
+    nonisolated static func save(_ definition: DeviceDefinition, to path: String,
+                                 using cli: CLILocation) async throws -> [EditorValidationIssue] {
+        let data = try jsonData(definition)
+        let isJSON = URL(fileURLWithPath: path).pathExtension.lowercased() == "json"
+        if isJSON {
+            let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("bluemock-editor-\(UUID().uuidString).json")
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            try data.write(to: temporary, options: .atomic)
+            let issues = try await validate(temporary.path, using: cli)
+            guard issues.isEmpty else { return issues }
+            let destination = URL(fileURLWithPath: path).standardizedFileURL
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: destination, options: .atomic)
+            return []
+        }
+        if !definition.unknownTopLevel.isEmpty || definition.hasUnknownTestFields {
+            return [EditorValidationIssue(path: "$", message: "The CLI YAML normalizer cannot preserve unknown top-level or test fields. Keep this definition as JSON or remove those fields.")]
+        }
+        let result = try await run(executable: cli.executable, args: ["save", path, "--json-errors"],
+                                   stdin: data, path: cli.loginPath)
+        if result.exitCode == 0 { return [] }
+        if let response = try? JSONDecoder().decode(ValidationResponse.self, from: result.stdout) { return response.errors }
+        return [EditorValidationIssue(path: "$", message: result.stderrText.isEmpty ? result.stdoutText : result.stderrText)]
+    }
+
+    nonisolated private static func jsonData(_ definition: DeviceDefinition) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(definition)
+    }
+    nonisolated static func validate(_ path: String, using cli: CLILocation) async throws -> [EditorValidationIssue] {
+        let result = try await run(executable: cli.executable,
+                                   args: ["validate", path, "--json"], path: cli.loginPath)
+        if let report = try? JSONDecoder().decode(ValidationResponse.self, from: result.stdout) {
+            return report.errors
+        }
+        return [EditorValidationIssue(path: "$", message: result.stderrText.isEmpty ? result.stdoutText : result.stderrText)]
+    }
+    nonisolated static func validate(_ definition: DeviceDefinition, using cli: CLILocation) async throws -> [EditorValidationIssue] {
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("bluemock-editor-\(UUID().uuidString).json")
+        let data = try jsonData(definition)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try data.write(to: temporary, options: .atomic)
+        return try await validate(temporary.path, using: cli)
     }
     nonisolated static func doctor(using cli: CLILocation, fix: Bool = false) async throws -> DoctorReport {
         try await json(DoctorReport.self, executable: cli.executable,

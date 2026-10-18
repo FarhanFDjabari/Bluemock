@@ -29,6 +29,7 @@ struct StateView: View {
     private func display(_ value: JSONValue) -> String {
         switch value {
         case .string(let string): return "\(String(reflecting: string))"
+        case .integer(let number): return String(number)
         case .number(let number):
             return number.rounded() == number ? String(format: "%.0f", number) : String(number)
         case .bool(let bool): return bool ? "true" : "false"

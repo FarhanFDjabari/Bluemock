@@ -19,6 +19,10 @@ struct BluemockApp: App {
         .menuBarExtraStyle(.window)
 
         Settings { SettingsView(store: store) }
+
+        WindowGroup("Peripheral Editor", id: "editor", for: EditorLaunch.self) { $launch in
+            EditorWindow(launch: $launch, store: store)
+        }
     }
 }
 

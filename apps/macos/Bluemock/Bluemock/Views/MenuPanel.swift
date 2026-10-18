@@ -3,6 +3,7 @@ import AppKit
 
 struct MenuPanel: View {
     @Bindable var store: DeviceStore
+    @Environment(\.openWindow) private var openWindow
     @State private var expandedDeviceID: String?
 
     var body: some View {
@@ -22,7 +23,9 @@ struct MenuPanel: View {
                                       isExpanded: expandedDeviceID == device.id,
                                       toggleExpanded: {
                                           expandedDeviceID = expandedDeviceID == device.id ? nil : device.id
-                                      })
+                                      },
+                                      restartNeeded: store.restartRequired.contains(device.id),
+                                      restart: { Task { await store.restart(device.id) } })
                             if expandedDeviceID == device.id {
                                 DeviceDetail(process: store.processes[device.id])
                                     .transition(.opacity)
@@ -36,10 +39,9 @@ struct MenuPanel: View {
 
             Divider()
             HStack {
-                Button { } label: { Label("New device…", systemImage: "plus") }
+                Button { openEditor(.new) } label: { Label("New device…", systemImage: "plus") }
                     .buttonStyle(.borderless)
-                    .disabled(true)
-                    .help("Device editor arrives in a later version")
+                    .accessibilityLabel("Create a new device definition")
                 Spacer()
                 if let directory = store.deviceDirectory {
                     Button {
@@ -87,6 +89,11 @@ struct MenuPanel: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 24)
+    }
+
+    private func openEditor(_ launch: EditorLaunch) {
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: "editor", value: launch)
     }
 
     private var installHint: some View {

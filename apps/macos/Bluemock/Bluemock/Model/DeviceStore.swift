@@ -11,6 +11,7 @@ final class DeviceStore {
     private(set) var presets: [CLIRunner.Preset] = []
     private(set) var doctorReport: DoctorReport?
     private(set) var processes: [String: DeviceProcess] = [:]
+    private(set) var restartRequired = Set<String>()
     @ObservationIgnored private var sessions: [String: DeviceSession] = [:]
     private(set) var loadError: String?
     private(set) var loading = false
@@ -95,7 +96,24 @@ final class DeviceStore {
         sessions[id] = session
         let child = DeviceProcess(summary: row, cli: cli, transport: transportOverride, session: session)
         processes[id] = child
+        restartRequired.remove(id)
         child.start()
+    }
+
+    func markNeedsRestart(_ id: String, previousID: String? = nil) {
+        if let previousID, previousID != id, let process = processes.removeValue(forKey: previousID) {
+            processes[id] = process
+            if let session = sessions.removeValue(forKey: previousID) { sessions[id] = session }
+            if restartRequired.remove(previousID) != nil { restartRequired.insert(id) }
+        }
+        if processes[id]?.isRunning == true { restartRequired.insert(id) }
+    }
+
+    func restart(_ id: String) async {
+        guard restartRequired.contains(id) else { return }
+        await stop(id)
+        restartRequired.remove(id)
+        start(id)
     }
 
     func stop(_ id: String) async {

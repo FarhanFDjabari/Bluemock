@@ -179,6 +179,79 @@ comments. `presets copy` refuses to overwrite an existing file without `--force`
 JSON-lines commands on stdin. See the [IPC protocol](docs/ipc-protocol.md) for
 event shapes, correlation, versioning, and shutdown rules.
 
+## macOS app
+
+Build the menu bar app from a checkout with:
+
+```sh
+apps/macos/scripts/build.sh
+```
+
+The script creates `apps/macos/build/Bluemock.app`; you can also open
+`apps/macos/Bluemock/Bluemock.xcodeproj` in Xcode. Move `Bluemock.app` to
+`/Applications` to install it, then launch it. Bluemock appears in the menu bar
+without a Dock icon.
+
+Install the CLI first with `scripts/install.sh`, or set its executable path in
+Bluemock Settings. The panel shows environment status and supported Bluetooth
+fixes, and starts or stops devices. Expand a running device to trigger actions,
+inspect state, view a text or hex event log, or disconnect the central. Choose
+**New device…** to start from a blank definition, a preset, or a duplicate.
+The editor validates through the CLI and saves YAML through `bluemock save`.
+
+Enable **Launch at login** in Settings to start Bluemock automatically. Each
+running device uses a separate CLI process, so multiple peripherals can run at
+once.
+
+## macOS app
+
+Build the menu bar app from a checkout with:
+
+```sh
+apps/macos/scripts/build.sh
+```
+
+The script creates `apps/macos/build/Bluemock.app`; you can also open
+`apps/macos/Bluemock/Bluemock.xcodeproj` in Xcode. Move `Bluemock.app` to
+`/Applications` to install it, then launch it. Bluemock appears in the menu bar
+and does not add a Dock icon.
+
+Install the CLI first with `scripts/install.sh`, or set its executable path in
+Bluemock Settings. The panel shows environment status and supported Bluetooth
+fixes, and starts or stops devices. Expand a running device to trigger actions,
+inspect state, view a text or hex event log, or disconnect the central. Choose
+**New device…** to start from a blank definition, a preset, or an existing
+device. The editor validates through the CLI and saves YAML through
+`bluemock save`.
+
+Enable **Launch at login** in Settings to start Bluemock automatically. Each
+running device uses a separate CLI process, so multiple peripherals can run at
+once.
+
+## macOS app
+
+Build the menu bar app from a checkout with:
+
+```sh
+apps/macos/scripts/build.sh
+```
+
+The script creates `apps/macos/build/Bluemock.app`; you can also open
+`apps/macos/Bluemock/Bluemock.xcodeproj` in Xcode. Move `Bluemock.app` to
+`/Applications` to install it, then launch it. Bluemock appears in the menu bar
+and does not add a Dock icon.
+
+Install the CLI first with `scripts/install.sh`, or set its executable path in
+Bluemock Settings. The panel shows the environment status, lets you apply
+supported Bluetooth fixes, and starts or stops devices. Expand a running device
+to trigger its actions, inspect state, view the text or hex event log, or
+disconnect the central. Choose **New device…** to create a definition, start
+from a preset, or duplicate a saved device. The editor validates through the
+CLI and saves YAML through `bluemock save`.
+
+Settings can register Bluemock to launch at login. Each running device is a
+separate CLI process, so several peripherals can run at once.
+
 ```sh
 printf '{"cmd":"state","id":"s1"}\n{"cmd":"action","id":"push","params":{"message":"hi"}}\n{"cmd":"stop"}\n' |
   bluemock run hm10-serial --ipc --transport local
@@ -205,5 +278,4 @@ emulator version, netsim, connected emulators, their AVD/API, and Bluetooth stat
 BLE is supported; Classic SPP/RFCOMM is not implemented yet. Legacy BLE
 advertising uses two 31-byte packets, so oversized names/advertising fields can
 fail at startup. This simulates device protocols rather than physical sensors.
-A native macOS GUI under `apps/macos` is coming; Windows and Linux currently use
-the CLI.
+The native menu bar app runs on macOS; Windows and Linux currently use the CLI.

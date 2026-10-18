@@ -41,8 +41,7 @@ private nonisolated struct ParameterSpec: Identifiable, Sendable {
     }
 
     private static func number(_ value: JSONValue?) -> Double? {
-        guard case .number(let number) = value else { return nil }
-        return number
+        switch value { case .number(let number): number; case .integer(let number): Double(number); default: nil }
     }
 }
 
@@ -209,14 +208,15 @@ struct ActionForm: View {
                 throw FormError("Enter a whole number for \(parameter.id)")
             }
             try checkBounds(number, parameter)
-            return .number(number)
+            guard let integer = Int(exactly: number) else { throw FormError("\(parameter.id) is outside the supported integer range") }
+            return .integer(integer)
         case "string": return .string(value.stringValue ?? "")
         case "boolean":
             guard case .bool = value else { throw FormError("Choose a boolean value for \(parameter.id)") }
             return value
         case "choice":
             guard parameter.choices.contains(value) else { throw FormError("Choose a listed value for \(parameter.id)") }
-            if case .number(let number) = value { try checkBounds(number, parameter) }
+            if let number = numeric(value) { try checkBounds(number, parameter) }
             return value
         default: return value
         }
@@ -250,6 +250,7 @@ struct ActionForm: View {
     private func numeric(_ value: JSONValue?) -> Double? {
         switch value {
         case .number(let number): return number
+        case .integer(let number): return Double(number)
         case .string(let string): return Double(string)
         default: return nil
         }
@@ -263,6 +264,7 @@ struct ActionForm: View {
     private func choiceTitle(_ choice: JSONValue) -> String {
         switch choice {
         case .string(let value): value
+        case .integer(let value): String(value)
         case .number(let value): value.rounded() == value ? String(format: "%.0f", value) : String(value)
         case .bool(let value): value ? "Yes" : "No"
         default: "—"
