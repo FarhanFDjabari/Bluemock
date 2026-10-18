@@ -1,0 +1,153 @@
+import Foundation
+import Darwin
+
+private nonisolated final class ProcessCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var output = Data()
+    private var error = Data()
+    private var outputEnded = false
+    private var errorEnded = false
+    private var exitCode: Int32?
+    private var finished = false
+    private var completion: ((Result<CLIRunner.Result, Error>) -> Void)?
+
+    init(completion: @escaping (Result<CLIRunner.Result, Error>) -> Void) { self.completion = completion }
+    func append(_ data: Data, toOutput: Bool) {
+        lock.lock()
+        if toOutput { output.append(data) } else { error.append(data) }
+        lock.unlock()
+    }
+    func end(output streamIsOutput: Bool) {
+        lock.lock()
+        if streamIsOutput { outputEnded = true } else { errorEnded = true }
+        lock.unlock()
+        finishIfReady()
+    }
+    func terminated(_ code: Int32) {
+        lock.lock(); exitCode = code; lock.unlock()
+        finishIfReady()
+    }
+    private func finishIfReady() {
+        lock.lock()
+        guard !finished, let code = exitCode, outputEnded, errorEnded else { lock.unlock(); return }
+        finished = true
+        let callback = completion
+        completion = nil
+        let out = output, err = error
+        lock.unlock()
+        callback?(.success(CLIRunner.Result(exitCode: code, stdout: out, stderr: err)))
+    }
+    func fail(_ error: Error) {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        finished = true
+        let callback = completion
+        completion = nil
+        lock.unlock()
+        callback?(.failure(error))
+    }
+}
+
+enum CLIRunner {
+    nonisolated struct Paths: Decodable, Sendable { let device_dir: String; let preset_dir: String; let version: String }
+    nonisolated struct Preset: Decodable, Identifiable, Sendable { let id: String; let name: String; let description: String }
+    nonisolated struct Result: Sendable {
+        let exitCode: Int32
+        let stdout: Data
+        let stderr: Data
+        var stdoutText: String { String(decoding: stdout, as: UTF8.self) }
+        var stderrText: String { String(decoding: stderr, as: UTF8.self) }
+    }
+
+    nonisolated static func run(executable: URL, args: [String], stdin: Data? = nil,
+                                timeout: TimeInterval = 30, path: String? = nil) async throws -> Result {
+        let process = Process()
+        let input = Pipe(), output = Pipe(), errors = Pipe()
+        process.executableURL = executable
+        process.arguments = args
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = errors
+        var environment = ProcessInfo.processInfo.environment
+        if let path { environment["PATH"] = path }
+        process.environment = environment
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let capture = ProcessCapture { result in
+                continuation.resume(with: result)
+            }
+            func configure(_ handle: FileHandle, output: Bool) {
+                handle.readabilityHandler = { file in
+                    let data = file.availableData
+                    if data.isEmpty {
+                        file.readabilityHandler = nil
+                        capture.end(output: output)
+                    } else {
+                        capture.append(data, toOutput: output)
+                    }
+                }
+            }
+            configure(output.fileHandleForReading, output: true)
+            configure(errors.fileHandleForReading, output: false)
+            process.terminationHandler = { child in capture.terminated(child.terminationStatus) }
+            do {
+                try process.run()
+                if let stdin {
+                    try input.fileHandleForWriting.write(contentsOf: stdin)
+                }
+                try? input.fileHandleForWriting.close()
+            } catch {
+                if process.isRunning {
+                    process.terminate()
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
+                        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                    }
+                }
+                capture.fail(error)
+                return
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                guard process.isRunning else { return }
+                process.terminate()
+                DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
+                    if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                }
+            }
+        }
+    }
+
+    nonisolated static func json<T: Decodable>(_ type: T.Type, executable: URL, args: [String],
+                                                path: String? = nil) async throws -> T {
+        let result = try await run(executable: executable, args: args, path: path)
+        guard result.exitCode == 0 else {
+            throw CLIRunnerError.commandFailed(result.stderrText.isEmpty ? result.stdoutText : result.stderrText)
+        }
+        return try JSONDecoder().decode(type, from: result.stdout)
+    }
+
+    nonisolated static func paths(using cli: CLILocation) async throws -> Paths {
+        try await json(Paths.self, executable: cli.executable, args: ["paths", "--json"], path: cli.loginPath)
+    }
+    nonisolated static func devicesList(using cli: CLILocation) async throws -> [DeviceSummary] {
+        try await json([DeviceSummary].self, executable: cli.executable, args: ["devices", "list", "--json"], path: cli.loginPath)
+    }
+    nonisolated static func presetsList(using cli: CLILocation) async throws -> [Preset] {
+        try await json([Preset].self, executable: cli.executable, args: ["presets", "list", "--json"], path: cli.loginPath)
+    }
+    nonisolated static func presetsCopy(_ id: String, using cli: CLILocation) async throws -> Result {
+        let result = try await run(executable: cli.executable, args: ["presets", "copy", id], path: cli.loginPath)
+        guard result.exitCode == 0 else { throw CLIRunnerError.commandFailed(result.stderrText) }
+        return result
+    }
+    nonisolated static func doctor(using cli: CLILocation, fix: Bool = false) async throws -> DoctorReport {
+        try await json(DoctorReport.self, executable: cli.executable,
+                       args: ["doctor", "--json"] + (fix ? ["--fix"] : []), path: cli.loginPath)
+    }
+}
+
+nonisolated enum CLIRunnerError: LocalizedError {
+    case commandFailed(String)
+    var errorDescription: String? {
+        switch self { case .commandFailed(let message): return message.isEmpty ? "CLI command failed" : message }
+    }
+}
