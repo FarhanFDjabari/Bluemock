@@ -27,3 +27,13 @@ actions:
         type: string
         default: hello
     send: {characteristic: serial, text: "{message}\r\n"}
+
+# Selftest uses a local Bumble central; each case starts with fresh state.
+tests:
+  - name: Echo a write
+    write: {characteristic: serial, text: ping}
+    expect: {characteristic: serial, text: ping}
+  - name: Send text action
+    action: send
+    params: {message: hi}
+    expect: {characteristic: serial, text: "hi\r\n"}

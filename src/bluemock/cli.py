@@ -1,11 +1,13 @@
 """Definition-management CLI; engine commands register here in later phases."""
 
 import argparse
+import asyncio
 import json
+import logging
 import os
 import sys
 import tempfile
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import yaml
@@ -88,7 +90,15 @@ def _parser():
     devices = commands.add_parser("devices").add_subparsers(dest="operation", required=True)
     devices.add_parser("list").add_argument("--json", action="store_true")
     commands.add_parser("paths").add_argument("--json", action="store_true", required=True)
-    # P2 registers run/selftest here; P3 registers doctor. No runtime imports in P1.
+    run = commands.add_parser("run")
+    run.add_argument("definition", metavar="X")
+    run.add_argument("--name", metavar="N")
+    run.add_argument("--transport", metavar="SPEC", help="Bumble transport specification")
+    run.add_argument("--ipc", action="store_true")
+    selftest = commands.add_parser("selftest")
+    selftest.add_argument("definition", metavar="X")
+    selftest.add_argument("--json", action="store_true")
+    # P3 replaces the IPC placeholder and registers doctor here.
     return parser
 
 
@@ -138,7 +148,33 @@ def _copy(args):
 
 
 def _dispatch(args):
-    if args.command == "paths":
+    if args.command == "run":
+        if args.ipc:
+            print("--ipc is not implemented until P3", file=sys.stderr)
+            return 2
+        definition = schema.load(paths.resolve(args.definition))
+        if args.name is not None:
+            if not args.name.strip():
+                raise ValueError("Advertised name cannot be empty")
+            definition = replace(definition, name=args.name)
+        from .repl import run
+        return asyncio.run(run(definition, args.transport))
+    elif args.command == "selftest":
+        from .selftest import selftest
+        try:
+            definition = schema.load(paths.resolve(args.definition))
+            result = asyncio.run(selftest(definition))
+        except (ValueError, OSError) as exc:
+            result = {"ok": False, "checks": [{"name": "definition", "ok": False, "detail": str(exc)}]}
+        if args.json:
+            _print(result, True)
+        else:
+            for check in result["checks"]:
+                print(f"{'PASS' if check['ok'] else 'FAIL'} {check['name']}: {check['detail']}")
+            passed = sum(check["ok"] for check in result["checks"])
+            print(f"{'PASS' if result['ok'] else 'FAIL'} selftest: {passed}/{len(result['checks'])} checks passed")
+        return 0 if result["ok"] else 1
+    elif args.command == "paths":
         _print({"device_dir": str(paths.device_dir()), "preset_dir": str(paths.preset_dir()),
                 "version": __version__}, True)
     elif args.command == "save":
@@ -179,8 +215,12 @@ def _dispatch(args):
 
 
 def main(argv=None) -> int:
+    os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
+    logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
     try:
         return _dispatch(_parser().parse_args(argv))
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        return 0
     except (OSError, ValueError, UnicodeError, yaml.YAMLError) as exc:
         print(f"$: {exc}", file=sys.stderr)
         return 1

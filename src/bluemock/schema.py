@@ -3,6 +3,8 @@
 Runtime expression scope comprises state variables, action parameters, regex named
 groups, value (raw write bytes), and text (decoded, untrimmed write text).
 Loading never evaluates user expressions or imports the Bluetooth runtime.
+Explicit and derived Bluetooth addresses are random static addresses on every
+transport, never public addresses.
 """
 
 import json
@@ -19,6 +21,7 @@ import yaml
 from .expr import (ExpressionError, compile_expression,
                    expression_names, unknown_name_messages)
 from .template import check_payload
+from .schema_tests import TestCase, parse_tests, validate_tests
 
 
 @dataclass
@@ -112,6 +115,7 @@ class Definition:
     state: dict[str, Any] = field(default_factory=dict)
     rules: list[Rule] = field(default_factory=list)
     actions: list[Action] = field(default_factory=list)
+    tests: list[TestCase] = field(default_factory=list)
 
 
 def normalize_uuid(value) -> str:
@@ -197,6 +201,10 @@ def validate(data, stem="device") -> list[ValidationIssue]:
     if "address" in data and (not isinstance(data["address"], str) or
                              not re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", data["address"])):
         error("address", "Expected six colon-separated hexadecimal octets")
+    elif "address" in data:
+        address = data["address"].upper()
+        if int(address[:2], 16) < 0xC0 or address in ("FF:FF:FF:FF:FF:FF", "C0:00:00:00:00:00"):
+            error("address", "address must be a random static address (first octet C0-FF)")
     chars = {}
     services = seq(data.get("services", []), "services")
     if not services:
@@ -325,6 +333,7 @@ def validate(data, stem="device") -> list[ValidationIssue]:
         assignments(action.get("set", {}), path + ".set", scope)
         if "send" in action:
             payload(action["send"], path + ".send", scope, True)
+    validate_tests(data, state_keys, chars, error)
     return errors
 
 
@@ -347,7 +356,7 @@ def parse_definition(data, stem="device") -> Definition:
                ("name", "type", "default", "min", "max", "choices") if k in p}) for p in a.get("params", [])],
                a.get("set", {}), payload(a.get("send"))) for a in data.get("actions", [])]
     return Definition(1, data.get("id", stem), data["name"], data.get("description", ""),
-                      data.get("address"), advertising, services, data.get("state", {}), rules, actions)
+                      data.get("address"), advertising, services, data.get("state", {}), rules, actions, parse_tests(data))
 
 
 def load(path) -> Definition:
@@ -362,9 +371,10 @@ def load(path) -> Definition:
 def to_dict(definition: Definition) -> dict:
     """Return ordered schema keys, omitting only contextual schema defaults."""
     defaults = {
-        Definition: {"description": "", "state": {}, "rules": [], "actions": []},
+        Definition: {"description": "", "state": {}, "rules": [], "actions": [], "tests": []},
         Characteristic: {"encoding": "text"}, Service: {"primary": True},
         Rule: {"trim": True, "set": {}}, Action: {"params": [], "set": {}},
+        TestCase: {"params": {}},
     }
     def clean(value):
         if is_dataclass(value):
