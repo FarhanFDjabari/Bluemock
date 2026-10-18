@@ -21,10 +21,8 @@ final class DeviceProcess: Identifiable {
     private(set) var stderrLines: [String] = []
     private(set) var lastFatalError: String?
     private var process: Process?
-    private var stdin: FileHandle?
-    @ObservationIgnored private nonisolated(unsafe) var stdoutBuffer = Data()
-    @ObservationIgnored private nonisolated(unsafe) var stderrBuffer = Data()
-    private let ioQueue = DispatchQueue(label: "io.github.farhanfdjabari.bluemock.process")
+    private var stdin: DeviceInput?
+    private var outputReader: DeviceOutput?
     var isRunning: Bool { process?.isRunning == true }
 
     init(summary: DeviceSummary, cli: CLILocation, transport: String?, session: DeviceSession) {
@@ -49,26 +47,22 @@ final class DeviceProcess: Identifiable {
         child.standardOutput = output
         child.standardError = errors
         process = child
-        stdin = input.fileHandleForWriting
-        let eventQueue = ioQueue
-
-        output.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else {
-                handle.readabilityHandler = nil
-                eventQueue.async { [weak self] in self?.consumeStdout(Data(), final: true) }
-                return
+        stdin = DeviceInput(input.fileHandleForWriting)
+        let reader = DeviceOutput { [weak self] events, lines in
+            guard let self else { return }
+            events.forEach { self.apply($0) }
+            self.stderrLines = Array((self.stderrLines + lines).suffix(Limits.maxStderrLines))
+            while self.stderrLines.reduce(0, { $0 + $1.utf8.count }) > Limits.maxStderrBytes {
+                self.stderrLines.removeFirst()
             }
-            eventQueue.async { [weak self] in self?.consumeStdout(data) }
         }
-        errors.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else {
-                handle.readabilityHandler = nil
-                eventQueue.async { [weak self] in self?.consumeStderr(Data(), final: true) }
-                return
+        outputReader = reader
+        for (handle, isOutput) in [(output.fileHandleForReading, true), (errors.fileHandleForReading, false)] {
+            handle.readabilityHandler = { file in
+                let data = file.availableData
+                if data.isEmpty { file.readabilityHandler = nil }
+                reader.consume(data, isOutput: isOutput, final: data.isEmpty)
             }
-            eventQueue.async { [weak self] in self?.consumeStderr(data) }
         }
         child.terminationHandler = { [weak self] process in
             Task { @MainActor [weak self] in self?.didExit(code: process.terminationStatus) }
@@ -81,56 +75,15 @@ final class DeviceProcess: Identifiable {
         }
     }
 
-    private nonisolated func consumeStdout(_ data: Data, final: Bool = false) {
-        stdoutBuffer.append(data)
-        var decoded: [IPCEvent] = []
-        while let newline = stdoutBuffer.firstIndex(of: 0x0A) {
-            let line = Data(stdoutBuffer[..<newline])
-            stdoutBuffer.removeSubrange(...newline)
-            if let event = try? JSONDecoder().decode(IPCEvent.self, from: line) { decoded.append(event) }
-        }
-        if final, !stdoutBuffer.isEmpty {
-            if let event = try? JSONDecoder().decode(IPCEvent.self, from: stdoutBuffer) { decoded.append(event) }
-            stdoutBuffer.removeAll(keepingCapacity: true)
-        }
-        guard !decoded.isEmpty else { return }
-        DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                decoded.forEach { self.apply($0) }
-            }
-        }
-    }
-
-    private nonisolated func consumeStderr(_ data: Data, final: Bool = false) {
-        stderrBuffer.append(data)
-        var lines: [String] = []
-        while let newline = stderrBuffer.firstIndex(of: 0x0A) {
-            let line = Data(stderrBuffer[..<newline])
-            stderrBuffer.removeSubrange(...newline)
-            lines.append(String(decoding: line, as: UTF8.self).trimmingCharacters(in: .newlines))
-        }
-        if final, !stderrBuffer.isEmpty {
-            lines.append(String(decoding: stderrBuffer, as: UTF8.self).trimmingCharacters(in: .newlines))
-            stderrBuffer.removeAll(keepingCapacity: true)
-        }
-        guard !lines.isEmpty else { return }
-        DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.stderrLines = Array((self.stderrLines + lines).suffix(8))
-            }
-        }
-    }
-
     private func apply(_ incoming: IPCEvent) {
         let event = session.recordEvent(incoming)
         events.append(event)
         eventRevision += 1
-        if events.count > 200 { events.removeFirst(events.count - 200) }
+        if events.count > Limits.maxVisibleEvents { events.removeFirst(events.count - Limits.maxVisibleEvents) }
         switch event.kind {
         case .ready:
             devicePayload = event.fields["device"]
+            session.reconcileActions(devicePayload?.objectValue?["actions"]?.arrayValue ?? [])
             stateValues = event.fields["device"]?.objectValue?["state"]?.objectValue ?? stateValues
         case .advertising: status = .advertising
         case .connected: status = .connected(event.fields["peer"]?.stringValue ?? "Central")
@@ -153,47 +106,49 @@ final class DeviceProcess: Identifiable {
     }
 
     func send(_ command: IPCCommand) {
-        guard isRunning, let stdin, let data = try? JSONEncoder().encode(command) else { return }
-        do { try stdin.write(contentsOf: data + Data([0x0A])) }
-        catch { status = .error("Could not send command: \(error.localizedDescription)") }
+        guard isRunning, let stdin else { return }
+        func report(_ message: String) {
+            if let actionID = command.actionID { session.receiveError(replyTo: actionID, message: message) }
+            apply(IPCEvent(kind: .error, eventName: "error", fields: ["message": .string(message)]))
+        }
+        do {
+            let data = try JSONEncoder().encode(command) + Data([10])
+            let actionID = command.actionID
+            if let error = stdin.enqueue(data, failure: { [weak self] message in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if let actionID { self.session.receiveError(replyTo: actionID, message: message) }
+                    self.apply(IPCEvent(kind: .error, eventName: "error", fields: ["message": .string(message)]))
+                }
+            }) { report(error) }
+        } catch { report(error.localizedDescription) }
     }
 
     func stop() async {
-        guard let process else {
-            session.clearPendingCommands()
-            status = .stopped
-            return
-        }
-        defer { session.clearPendingCommands() }
+        guard let process else { session.clearPendingCommands(); status = .stopped; return }
+        ProcessStop.schedule(process)
         send(.stop())
-        if await waitForExit(process, seconds: 2) { status = .stopped; return }
-        kill(process.processIdentifier, SIGTERM)
-        if await waitForExit(process, seconds: 3) { status = .stopped; return }
-        kill(process.processIdentifier, SIGKILL)
-        _ = await waitForExit(process, seconds: 1)
+        let deadline = Date().addingTimeInterval(Limits.stopWaitSeconds)
+        while process.isRunning && Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        session.clearPendingCommands()
         status = .stopped
     }
 
     func stopSynchronously() {
         session.clearPendingCommands()
         guard let process, process.isRunning else { return }
-        if let data = try? JSONEncoder().encode(IPCCommand.stop()) { try? stdin?.write(contentsOf: data + Data([0x0A])) }
-        let deadline = Date().addingTimeInterval(0.5)
-        while process.isRunning && Date() < deadline { usleep(20_000) }
-        if process.isRunning { kill(process.processIdentifier, SIGTERM) }
-        let termDeadline = Date().addingTimeInterval(1.5)
-        while process.isRunning && Date() < termDeadline { usleep(20_000) }
-        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-    }
-
-    private func waitForExit(_ process: Process, seconds: Double) async -> Bool {
-        let deadline = Date().addingTimeInterval(seconds)
-        while process.isRunning && Date() < deadline { try? await Task.sleep(for: .milliseconds(50)) }
-        return !process.isRunning
+        ProcessStop.schedule(process)
+        send(.stop())
+        let deadline = Date().addingTimeInterval(Limits.stopWaitSeconds)
+        while process.isRunning && Date() < deadline { usleep(Limits.exitPollMicroseconds) }
     }
 
     private func didExit(code: Int32) {
+        stdin?.close()
         stdin = nil
+        outputReader = nil
         process = nil
         session.clearPendingCommands()
         if code == 0 { status = .stopped }

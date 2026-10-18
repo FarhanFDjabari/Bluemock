@@ -17,11 +17,27 @@ final class DeviceSession {
     private var feedbackTokens: [String: UUID] = [:]
 
     func ensureValues(actionID: String, params: [(String, JSONValue?)]) {
-        var values = formValues[actionID] ?? [:]
+        let names = Set(params.map { $0.0 })
+        var values = (formValues[actionID] ?? [:]).filter { names.contains($0.key) }
         for (name, defaultValue) in params where values[name] == nil {
             if let defaultValue { values[name] = defaultValue }
         }
         formValues[actionID] = values
+    }
+
+    func reconcileActions(_ actions: [JSONValue]) {
+        let ids = Set(actions.compactMap { $0.objectValue?["id"]?.stringValue })
+        formValues = formValues.filter { ids.contains($0.key) }
+        feedback = feedback.filter { ids.contains($0.key) }
+        feedbackTokens = feedbackTokens.filter { ids.contains($0.key) }
+        for action in actions {
+            guard let fields = action.objectValue, let id = fields["id"]?.stringValue else { continue }
+            let params = (fields["params"]?.arrayValue ?? []).compactMap { value -> (String, JSONValue?)? in
+                guard let data = value.objectValue, let name = data["name"]?.stringValue else { return nil }
+                return (name, data["default"])
+            }
+            ensureValues(actionID: id, params: params)
+        }
     }
 
     func value(actionID: String, name: String) -> JSONValue? { formValues[actionID]?[name] }
@@ -89,6 +105,7 @@ final class DeviceSession {
             try? await Task.sleep(for: .seconds(duration))
             guard self?.feedbackTokens[actionID] == token else { return }
             self?.feedback[actionID] = nil
+            self?.feedbackTokens[actionID] = nil
         }
     }
 }

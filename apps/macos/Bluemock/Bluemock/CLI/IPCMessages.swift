@@ -43,6 +43,12 @@ nonisolated struct IPCEvent: Codable, Sendable {
     var sequence = 0
 
     private enum CodingKeys: String, CodingKey { case event }
+    init(kind: Kind, eventName: String, fields: [String: JSONValue]) {
+        self.kind = kind
+        self.eventName = eventName
+        self.fields = fields
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: DynamicCodingKey.self)
         let raw = try container.decode(String.self, forKey: DynamicCodingKey("event"))
