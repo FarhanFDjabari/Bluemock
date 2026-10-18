@@ -8,6 +8,8 @@ import signal
 import sys
 from contextlib import nullcontext
 
+from .schema import RESERVED_ACTION_IDS
+
 
 def event_printer(engine):
     def output(event):
@@ -99,7 +101,7 @@ async def dispatch_line(engine, line):
             if not separator or kind not in ("text", "hex"):
                 raise ValueError("Payload must start with text: or hex:")
             await engine.send_manual(cid, {kind: value})
-        elif command in engine.actions:
+        elif command not in RESERVED_ACTION_IDS and command in engine.actions:
             action = engine.actions[command]
             params, position = {}, 0
             for token in shlex.split(remainder):

@@ -1,0 +1,40 @@
+# Nordic UART Service: separate write and notification characteristics.
+bluemock: 1
+id: nordic-uart
+name: BM-NUS
+description: Nordic UART Service with write echo and a text send action
+
+# RX receives central writes; TX sends peripheral notifications.
+services:
+  - uuid: 6E400001-B5A3-F393-E0A9-E50E24DCCA9E
+    characteristics:
+      - id: rx
+        uuid: 6E400002-B5A3-F393-E0A9-E50E24DCCA9E
+        properties: [write, write_without_response]
+      - id: tx
+        uuid: 6E400003-B5A3-F393-E0A9-E50E24DCCA9E
+        properties: [notify]
+
+# Echo the original decoded write, including its whitespace.
+rules:
+  - on_write: rx
+    any: true
+    reply: {characteristic: tx, text: "{text}"}
+
+# Send a complete serial line without needing a central write.
+actions:
+  - id: push
+    label: Send text
+    params:
+      - {name: message, type: string, default: hello}
+    send: {characteristic: tx, text: "{message}\r\n"}
+
+# Selftest writes RX and observes the distinct TX characteristic.
+tests:
+  - name: Echo a UART write
+    write: {characteristic: rx, text: ping}
+    expect: {characteristic: tx, text: ping}
+  - name: Send a UART line
+    action: push
+    params: {message: hi}
+    expect: {characteristic: tx, text: "hi\r\n"}

@@ -38,7 +38,7 @@ defaults may be omitted; an action with no parameters can omit `params`.
 Ready is emitted after radio power-on and before advertising starts.
 
 ```json
-{"ts":"2026-10-18T07:00:00+00:00","event":"ready","v":1,"version":"0.1.0","device":{"bluemock":1,"id":"example","name":"BM-EXAMPLE","advertising":{"interval_ms":250,"service_uuids":["FFE0"]},"services":[{"uuid":"FFE0","characteristics":[{"id":"serial","uuid":"FFE1","properties":["notify","write_without_response"]}]}],"state":{"battery":0,"tag":""},"actions":[{"id":"send","label":"Send text","params":[{"name":"message","type":"string","default":"hello"}],"send":{"characteristic":"serial","text":"{message}\r\n"}}]},"transport":"android-netsim:name=BM-EXAMPLE"}
+{"ts":"2026-10-18T07:00:00+00:00","event":"ready","v":1,"version":"0.1.0","device":{"bluemock":1,"id":"example","name":"BM-EXAMPLE","advertising":{"interval_ms":250,"service_uuids":["FFE0"]},"services":[{"uuid":"FFE0","characteristics":[{"id":"serial","uuid":"FFE1","properties":["notify","write_without_response"]}]}],"state":{"battery":0,"tag":""},"actions":[{"id":"push","label":"Send text","params":[{"name":"message","type":"string","default":"hello"}],"send":{"characteristic":"serial","text":"{message}\r\n"}}]},"transport":"android-netsim:name=BM-EXAMPLE"}
 ```
 
 ### advertising
@@ -93,7 +93,7 @@ action id). Manual sends omit ref. Tx records a send through the peripheral;
 only subscribed centrals receive notifications/indications.
 
 ```json
-{"ts":"2026-10-18T07:00:01+00:00","event":"tx","characteristic":"serial","hex":"68 69 0D 0A","text":"hi\r\n","source":"action","ref":"send"}
+{"ts":"2026-10-18T07:00:01+00:00","event":"tx","characteristic":"serial","hex":"68 69 0D 0A","text":"hi\r\n","source":"action","ref":"push"}
 ```
 
 ### state
@@ -142,6 +142,10 @@ by that command and on the state response to `cmd:state`. The id should be a
 small JSON value; clients normally use strings or integers. No general success
 acknowledgment exists. Malformed JSON has no usable correlation id.
 
+Action ids in device definitions cannot use the REPL built-in command names
+`send`, `set`, `state`, `drop`, `help`, `quit` or `exit`; validation reports the
+reserved id at `actions[i].id`. The HM-10 and Nordic UART action id is `push`.
+
 For the action command, `id` is required and identifies the action itself; it
 also supplies error correlation. There is no separate action request-id field
 in v1. Correlation does not attach unrelated radio errors to a prior command.
@@ -153,7 +157,7 @@ parameters use declared defaults, and required parameters without defaults
 produce errors. Values use the definition's parameter coercion and bounds.
 
 ```json
-{"cmd":"action","id":"send","params":{"message":"hi"}}
+{"cmd":"action","id":"push","params":{"message":"hi"}}
 ```
 
 ### send

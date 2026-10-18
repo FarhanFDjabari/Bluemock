@@ -1,0 +1,40 @@
+# Heart Rate Service with an 8-bit measurement and chest sensor location.
+bluemock: 1
+id: heart-rate
+name: BM-HR
+description: Heart Rate Service with adjustable beats per minute
+
+# Flags 0 select an 8-bit BPM value; body sensor location 1 means chest.
+services:
+  - uuid: 180D
+    characteristics:
+      - id: measurement
+        uuid: 2A37
+        properties: [notify]
+        encoding: hex
+      - id: body_sensor_location
+        uuid: 2A38
+        properties: [read]
+        initial: {bytes: [{u8: 1}]}
+        encoding: hex
+
+# State is updated before the measurement payload is rendered.
+state:
+  bpm: 72
+
+actions:
+  - id: bpm
+    label: Heart rate (beats per minute)
+    params:
+      - {name: value, type: integer, default: 72, min: 30, max: 220}
+    set: {bpm: value}
+    send:
+      characteristic: measurement
+      bytes: [{u8: 0}, {u8: bpm}]
+
+# 80 BPM is 0x50, preceded by the flags byte.
+tests:
+  - name: Report 80 BPM
+    action: bpm
+    params: {value: 80}
+    expect: {characteristic: measurement, hex: "00 50"}

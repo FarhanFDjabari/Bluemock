@@ -1,0 +1,33 @@
+# Battery Service: one percentage byte, readable and notifiable.
+bluemock: 1
+id: battery
+name: BM-BAT
+description: Battery Service with a readable and adjustable charge percentage
+
+# Reads render current state, so they reflect subsequent level actions.
+services:
+  - uuid: 180F
+    characteristics:
+      - id: battery_level
+        uuid: 2A19
+        properties: [read, notify]
+        initial: {bytes: [{u8: level}]}
+        encoding: hex
+
+state:
+  level: 100
+
+# A percentage is required; values outside 0..100 are rejected.
+actions:
+  - id: level
+    label: Battery charge (percent)
+    params:
+      - {name: value, type: integer, min: 0, max: 100}
+    set: {level: value}
+    send: {characteristic: battery_level, bytes: [{u8: level}]}
+
+tests:
+  - name: Report 42 percent charge
+    action: level
+    params: {value: 42}
+    expect: {characteristic: battery_level, hex: "2A"}

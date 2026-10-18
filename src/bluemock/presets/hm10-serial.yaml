@@ -20,7 +20,7 @@ rules:
 
 # Actions become commands and GUI buttons. Templates can use action parameters.
 actions:
-  - id: send
+  - id: push
     label: Send text
     params:
       - name: message
@@ -34,6 +34,6 @@ tests:
     write: {characteristic: serial, text: ping}
     expect: {characteristic: serial, text: ping}
   - name: Send text action
-    action: send
+    action: push
     params: {message: hi}
     expect: {characteristic: serial, text: "hi\r\n"}

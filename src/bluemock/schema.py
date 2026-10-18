@@ -23,6 +23,8 @@ from .expr import (ExpressionError, compile_expression,
 from .template import check_payload
 from .schema_tests import TestCase, parse_tests, validate_tests
 
+RESERVED_ACTION_IDS = frozenset(("send", "set", "state", "drop", "help", "quit", "exit"))
+
 
 @dataclass
 class ValidationIssue:
@@ -288,6 +290,8 @@ def validate(data, stem="device") -> list[ValidationIssue]:
         if isinstance(aid, str):
             if aid in action_ids:
                 error(path + ".id", f"Duplicate action id: {aid}")
+            if aid in RESERVED_ACTION_IDS:
+                error(path + ".id", f"Action id {aid!r} is reserved for a built-in command; choose another id")
             action_ids.add(aid)
         names = set()
         for j, param in enumerate(seq(action.get("params", []), path + ".params")):

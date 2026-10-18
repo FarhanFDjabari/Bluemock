@@ -1,0 +1,68 @@
+# Lematec DTP pushes framed measurements; it has no write characteristic.
+bluemock: 1
+id: lematec-gauge
+name: DTP-SIM-001
+description: Lematec DTP gauge with framed tread and pressure readings and zero calibration
+
+services:
+  - uuid: FFF0
+    characteristics:
+      - id: measurement
+        uuid: FFF1
+        properties: [notify]
+
+# Frames are STX, position 01, four decimal digits, unit, ETX.
+actions:
+  - id: tread
+    label: Push tread depth (M mm; L inch)
+    params:
+      - {name: mm, type: number, default: 12.3}
+      - {name: unit, type: choice, choices: [M, L], default: M}
+    send:
+      characteristic: measurement
+      bytes:
+        - {u8: 2}
+        - {ascii: "01"}
+        # Half ties round away from zero, mirroring Swift .rounded().
+        - ascii: >-
+            {(int(mm * (10 if unit == 'M' else 100) + 0.5)
+            if mm >= 0 else -int(-mm * (10 if unit == 'M' else 100) + 0.5)):04d}
+        - {ascii: "{unit}"}
+        - {u8: 3}
+  - id: pressure
+    label: Push pressure (P psi; B bar; G kg/cm²; K kPa)
+    params:
+      - {name: value, type: number, default: 32}
+      - {name: unit, type: choice, choices: [P, B, G, K], default: P}
+    send:
+      characteristic: measurement
+      bytes:
+        - {u8: 2}
+        - {ascii: "01"}
+        # Half ties round away from zero, mirroring Swift .rounded().
+        - ascii: >-
+            {(int(value * (10 if unit == 'P' else 100 if unit == 'B' or unit == 'G' else 1) + 0.5)
+            if value >= 0 else -int(-value * (10 if unit == 'P' else 100 if unit == 'B' or unit == 'G' else 1) + 0.5)):04d}
+        - {ascii: "{unit}"}
+        - {u8: 3}
+  - id: zero
+    label: Push zero-calibration event
+    send: {characteristic: measurement, text: ZERO0000}
+
+# Assertions include exact framing and a half-tie rounding boundary.
+tests:
+  - name: Push 12.3 mm
+    action: tread
+    params: {mm: 12.3, unit: M}
+    expect: {characteristic: measurement, hex: "02 30 31 30 31 32 33 4D 03"}
+  - name: Push 2.5 bar
+    action: pressure
+    params: {value: 2.5, unit: B}
+    expect: {characteristic: measurement, hex: "02 30 31 30 32 35 30 42 03"}
+  - name: Push zero calibration
+    action: zero
+    expect: {characteristic: measurement, text: ZERO0000}
+  - name: Match Swift half-tie rounding
+    action: tread
+    params: {mm: 0.05, unit: M}
+    expect: {characteristic: measurement, hex: "02 30 31 30 30 30 31 4D 03"}

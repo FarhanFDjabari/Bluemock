@@ -1,0 +1,119 @@
+# TransLogik command/response gauge on the HM-10 serial profile.
+bluemock: 1
+id: translogik-gauge
+name: TLG-SIM-001
+description: TransLogik tread and pressure gauge with settings, RFID and battery controls
+
+# Match hardware: commands use write without response, data uses notifications.
+services:
+  - uuid: FFE0
+    characteristics:
+      - id: serial
+        uuid: FFE1
+        properties: [notify, write_without_response]
+
+# Defaults match the Swift simulator; measurement windows use gauge units.
+state:
+  tread_mm: 7.5
+  pressure_psi: 32.0
+  battery: 0
+  rfid: SIMTAG001
+  tread_window: 50
+  pressure_window: 30
+  idle_minutes: 60
+
+# Trim defaults to true. Bare setting reads precede their numeric write forms.
+rules:
+  - on_write: serial
+    equals: POWERSTATE
+    reply: {characteristic: serial, text: "POWERSTATE {battery}\r\n"}
+  - on_write: serial
+    equals: T
+    reply: {characteristic: serial, text: "T{tread_mm:.1f}\r\n"}
+  - on_write: serial
+    equals: P
+    reply: {characteristic: serial, text: "P{pressure_psi:.1f}\r\n"}
+  - on_write: serial
+    equals: V
+    reply: {characteristic: serial, text: "V1.0.0-SIM\r\n"}
+  - on_write: serial
+    equals: GI
+    reply: {characteristic: serial, text: "GI{rfid}\r\n"}
+  - on_write: serial
+    equals: AT
+    reply: {characteristic: serial, text: "AT{tread_window}\r\n"}
+  - on_write: serial
+    equals: AP
+    reply: {characteristic: serial, text: "AP{pressure_window}\r\n"}
+  - on_write: serial
+    equals: I
+    reply: {characteristic: serial, text: "I{idle_minutes}\r\n"}
+  # Setting writes update state silently; named regex groups are strings.
+  - on_write: serial
+    regex: '^AT(?P<v>\d+)$'
+    set: {tread_window: "int(v)"}
+  - on_write: serial
+    regex: '^AP(?P<v>\d+)$'
+    set: {pressure_window: "int(v)"}
+  - on_write: serial
+    regex: '^I(?P<v>\d+)$'
+    set: {idle_minutes: "int(v)"}
+  - on_write: serial
+    equals: UPP
+
+# Actions update future query answers and push unsolicited readings.
+actions:
+  - id: tread
+    label: Push tread depth (mm)
+    params:
+      - {name: mm, type: number, default: 12.3, min: 0, max: 30}
+    set: {tread_mm: mm}
+    send: {characteristic: serial, text: "T{mm:.1f}\r\n"}
+  - id: pressure
+    label: Push pressure (psi)
+    params:
+      - {name: psi, type: number, default: 35, min: 0, max: 200}
+    set: {pressure_psi: psi}
+    send: {characteristic: serial, text: "P{psi:.1f}\r\n"}
+  - id: battery
+    label: "Battery state: 0 battery good; 1 external power; 2 charging; 3 needs charging; 4 battery critically low"
+    params:
+      - {name: level, type: choice, choices: [0, 1, 2, 3, 4], default: 0}
+    set: {battery: level}
+    send: {characteristic: serial, text: "POWERSTATE {level}\r\n"}
+  - id: calibrate
+    label: Press calibration button
+    set: {tread_mm: "round(uniform(11, 17), 1)"}
+    send: {characteristic: serial, text: "N1\r\n"}
+  - id: rfid
+    label: Push RFID tag
+    params:
+      - {name: tag, type: string, default: SIMTAG001}
+    set: {rfid: tag}
+    send: {characteristic: serial, text: "GI{tag}\r\n"}
+
+# Every case starts from initial state; AT80 does not affect the next case.
+tests:
+  - name: Query initial tread depth
+    write: {characteristic: serial, text: "T\r\n"}
+    expect: {characteristic: serial, text: "T7.5\r\n"}
+  - name: Query initial power state
+    write: {characteristic: serial, text: POWERSTATE}
+    expect: {characteristic: serial, text: "POWERSTATE 0\r\n"}
+  - name: Accept pressure units silently
+    write: {characteristic: serial, text: UPP}
+    expect: none
+  - name: Set tread window silently
+    write: {characteristic: serial, text: AT80}
+    expect: none
+  - name: Query fresh-state tread window
+    write: {characteristic: serial, text: AT}
+    expect: {characteristic: serial, text: "AT50\r\n"}
+  - name: Push tread depth
+    action: tread
+    params: {mm: 9.4}
+    expect: {characteristic: serial, text: "T9.4\r\n"}
+  - name: Push needs-charging power state
+    action: battery
+    params: {level: 3}
+    expect: {characteristic: serial, text: "POWERSTATE 3\r\n"}

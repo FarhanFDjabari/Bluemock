@@ -1,0 +1,45 @@
+# Apps detecting Shahe by name require ^B-\d+$, with digits after the dash.
+bluemock: 1
+id: shahe-gauge
+name: B-1001
+description: Shahe depth gauge with big-endian hundredths of a millimetre and a sign flag
+
+# Receive-only gauge: FFFF / FF00 must expose notifications without writes.
+services:
+  - uuid: FFFF
+    characteristics:
+      - id: measurement
+        uuid: FF00
+        properties: [notify]
+        encoding: hex
+
+# Packet: STX, model 1, device 1, unsigned 32-bit value, negative flag.
+actions:
+  - id: tread
+    label: Push tread depth (mm)
+    params:
+      - {name: mm, type: number, default: 7.5, min: -50, max: 50}
+    send:
+      characteristic: measurement
+      bytes:
+        - {u8: 2}
+        - {u8: 1}
+        - {u8: 1}
+        # Non-negative magnitude rounds half ties up, mirroring Swift .rounded().
+        - {u32be: "int(abs(mm) * 100 + 0.5)"}
+        - {u8: "1 if mm < 0 else 0"}
+
+# Check signed encoding, the default reading, and an exact half tie.
+tests:
+  - name: Push negative 1.25 mm
+    action: tread
+    params: {mm: -1.25}
+    expect: {characteristic: measurement, hex: "02 01 01 00 00 00 7D 01"}
+  - name: Push positive 7.5 mm
+    action: tread
+    params: {mm: 7.5}
+    expect: {characteristic: measurement, hex: "02 01 01 00 00 02 EE 00"}
+  - name: Match Swift half-tie rounding
+    action: tread
+    params: {mm: 0.125}
+    expect: {characteristic: measurement, hex: "02 01 01 00 00 00 0D 00"}
