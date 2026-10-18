@@ -1,6 +1,6 @@
 import Foundation
 
-nonisolated enum JSONValue: Codable, Equatable, Sendable {
+nonisolated enum JSONValue: Codable, Equatable, Hashable, Sendable {
     case string(String), number(Double), bool(Bool), object([String: JSONValue]), array([JSONValue]), null
 
     init(from decoder: Decoder) throws {
@@ -27,6 +27,7 @@ nonisolated enum JSONValue: Codable, Equatable, Sendable {
 
     var stringValue: String? { if case .string(let value) = self { return value }; return nil }
     var objectValue: [String: JSONValue]? { if case .object(let value) = self { return value }; return nil }
+    var arrayValue: [JSONValue]? { if case .array(let value) = self { return value }; return nil }
 }
 
 nonisolated struct IPCEvent: Codable, Sendable {
@@ -37,6 +38,7 @@ nonisolated struct IPCEvent: Codable, Sendable {
     let kind: Kind
     let eventName: String
     let fields: [String: JSONValue]
+    var sequence = 0
 
     private enum CodingKeys: String, CodingKey { case event }
     init(from decoder: Decoder) throws {

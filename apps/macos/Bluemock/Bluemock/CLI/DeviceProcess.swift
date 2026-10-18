@@ -12,8 +12,10 @@ final class DeviceProcess: Identifiable {
     let definitionPath: String
     let cli: CLILocation
     let transport: String?
+    let session: DeviceSession
     private(set) var status: Status = .stopped
     private(set) var events: [IPCEvent] = []
+    private(set) var eventRevision = 0
     private(set) var stateValues: [String: JSONValue] = [:]
     private(set) var devicePayload: JSONValue?
     private(set) var stderrLines: [String] = []
@@ -25,11 +27,12 @@ final class DeviceProcess: Identifiable {
     private let ioQueue = DispatchQueue(label: "io.github.farhanfdjabari.bluemock.process")
     var isRunning: Bool { process?.isRunning == true }
 
-    init(summary: DeviceSummary, cli: CLILocation, transport: String?) {
+    init(summary: DeviceSummary, cli: CLILocation, transport: String?, session: DeviceSession) {
         id = summary.id
         definitionPath = summary.path
         self.cli = cli
         self.transport = transport
+        self.session = session
     }
 
     func start() {
@@ -73,6 +76,7 @@ final class DeviceProcess: Identifiable {
         do { try child.run() }
         catch {
             process = nil
+            session.clearPendingCommands()
             status = .error(error.localizedDescription)
         }
     }
@@ -119,20 +123,32 @@ final class DeviceProcess: Identifiable {
         }
     }
 
-    private func apply(_ event: IPCEvent) {
+    private func apply(_ incoming: IPCEvent) {
+        let event = session.recordEvent(incoming)
         events.append(event)
+        eventRevision += 1
         if events.count > 200 { events.removeFirst(events.count - 200) }
         switch event.kind {
-        case .ready: devicePayload = event.fields["device"]
+        case .ready:
+            devicePayload = event.fields["device"]
+            stateValues = event.fields["device"]?.objectValue?["state"]?.objectValue ?? stateValues
         case .advertising: status = .advertising
         case .connected: status = .connected(event.fields["peer"]?.stringValue ?? "Central")
         case .disconnected: status = .advertising
         case .state: stateValues = event.fields["values"]?.objectValue ?? stateValues
         case .error:
             let message = event.fields["message"]?.stringValue ?? "Unknown device error"
+            if let replyTo = event.fields["reply_to"]?.stringValue {
+                session.receiveError(replyTo: replyTo, message: message)
+            }
             if case .bool(true) = event.fields["fatal"] { lastFatalError = message; status = .error(message) }
+        case .tx:
+            if event.fields["source"]?.stringValue == "action",
+               let actionID = event.fields["ref"]?.stringValue {
+                session.receiveTransmission(actionID: actionID)
+            }
         case .stopped: break
-        case .subscribed, .rx, .tx, .log, .unknown: break
+        case .subscribed, .rx, .log, .unknown: break
         }
     }
 
@@ -143,7 +159,12 @@ final class DeviceProcess: Identifiable {
     }
 
     func stop() async {
-        guard let process else { status = .stopped; return }
+        guard let process else {
+            session.clearPendingCommands()
+            status = .stopped
+            return
+        }
+        defer { session.clearPendingCommands() }
         send(.stop())
         if await waitForExit(process, seconds: 2) { status = .stopped; return }
         kill(process.processIdentifier, SIGTERM)
@@ -154,6 +175,7 @@ final class DeviceProcess: Identifiable {
     }
 
     func stopSynchronously() {
+        session.clearPendingCommands()
         guard let process, process.isRunning else { return }
         if let data = try? JSONEncoder().encode(IPCCommand.stop()) { try? stdin?.write(contentsOf: data + Data([0x0A])) }
         let deadline = Date().addingTimeInterval(0.5)
@@ -173,6 +195,7 @@ final class DeviceProcess: Identifiable {
     private func didExit(code: Int32) {
         stdin = nil
         process = nil
+        session.clearPendingCommands()
         if code == 0 { status = .stopped }
         else if case .error = status { }
         else { status = .error(lastFatalError ?? stderrLines.last ?? "Process exited with status \(code)") }

@@ -11,6 +11,7 @@ final class DeviceStore {
     private(set) var presets: [CLIRunner.Preset] = []
     private(set) var doctorReport: DoctorReport?
     private(set) var processes: [String: DeviceProcess] = [:]
+    @ObservationIgnored private var sessions: [String: DeviceSession] = [:]
     private(set) var loadError: String?
     private(set) var loading = false
 
@@ -90,14 +91,32 @@ final class DeviceStore {
     func start(_ id: String) {
         guard let cli, let row = devices.first(where: { $0.id == id }), row.valid else { return }
         if let existing = processes[id], existing.isRunning { return }
-        let child = DeviceProcess(summary: row, cli: cli, transport: transportOverride)
+        let session = sessions[id] ?? DeviceSession()
+        sessions[id] = session
+        let child = DeviceProcess(summary: row, cli: cli, transport: transportOverride, session: session)
         processes[id] = child
         child.start()
     }
 
-    func stop(_ id: String) async { await processes[id]?.stop() }
-    func stopAll() async { for process in processes.values { await process.stop() } }
-    func stopAllSynchronously() { processes.values.forEach { $0.stopSynchronously() } }
+    func stop(_ id: String) async {
+        guard let process = processes[id] else { return }
+        await process.stop()
+        process.session.clearPendingCommands()
+    }
+
+    func stopAll() async {
+        for process in processes.values {
+            await process.stop()
+            process.session.clearPendingCommands()
+        }
+    }
+
+    func stopAllSynchronously() {
+        processes.values.forEach {
+            $0.stopSynchronously()
+            $0.session.clearPendingCommands()
+        }
+    }
 
     func reloadDevices() async {
         guard let cli else { return }
@@ -107,7 +126,10 @@ final class DeviceStore {
 
     private func syncProcesses() {
         let finished = processes.filter { !$0.value.isRunning && $0.value.status == .stopped }.map(\.key)
-        for id in finished { processes.removeValue(forKey: id) }
+        for id in finished {
+            processes[id]?.session.clearPendingCommands()
+            processes.removeValue(forKey: id)
+        }
     }
 
     private func installWatcher(_ directory: URL) {

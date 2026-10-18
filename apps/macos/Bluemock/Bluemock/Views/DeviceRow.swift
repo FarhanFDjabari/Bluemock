@@ -5,6 +5,8 @@ struct DeviceRow: View {
     let process: DeviceProcess?
     let start: () -> Void
     let stop: () -> Void
+    let isExpanded: Bool
+    let toggleExpanded: () -> Void
 
     private var status: DeviceProcess.Status { process?.status ?? .stopped }
     private var tint: Color {
@@ -28,20 +30,31 @@ struct DeviceRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Circle().fill(device.valid ? tint : .red).frame(width: 9, height: 9)
-                .accessibilityLabel("Device status")
-                .accessibilityValue(device.valid ? statusText : "Invalid definition")
-            VStack(alignment: .leading, spacing: 2) {
-                Text(device.name.isEmpty ? device.id : device.name).font(.body)
-                Text(device.id).font(.caption).foregroundStyle(.secondary)
-                if !device.valid {
-                    Text(device.error ?? "Invalid device definition")
-                        .font(.caption).foregroundStyle(.red).lineLimit(1)
-                        .help(device.error ?? "Invalid device definition")
-                } else if case .error(let message) = status {
-                    Text(message).font(.caption).foregroundStyle(.red).lineLimit(1).help(message)
+            Button(action: toggleExpanded) {
+                HStack(spacing: 10) {
+                    Circle().fill(device.valid ? tint : .red).frame(width: 9, height: 9)
+                        .accessibilityLabel("Device status")
+                        .accessibilityValue(device.valid ? statusText : "Invalid definition")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(device.name.isEmpty ? device.id : device.name).font(.body)
+                        Text(device.id).font(.caption).foregroundStyle(.secondary)
+                        if !device.valid {
+                            Text(device.error ?? "Invalid device definition")
+                                .font(.caption).foregroundStyle(.red).lineLimit(1)
+                                .help(device.error ?? "Invalid device definition")
+                        } else if case .error(let message) = status {
+                            Text(message).font(.caption).foregroundStyle(.red).lineLimit(1).help(message)
+                        }
+                    }
+                    Spacer(minLength: 2)
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2).foregroundStyle(.tertiary).accessibilityHidden(true)
                 }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(isExpanded ? "Collapse" : "Expand") \(device.name) details")
+            .accessibilityValue(device.valid ? statusText : "Invalid definition")
             Spacer()
             Button {
                 if process?.isRunning == true { stop() } else { start() }
@@ -53,6 +66,5 @@ struct DeviceRow: View {
             .accessibilityLabel(process?.isRunning == true ? "Stop \(device.name)" : "Start \(device.name)")
         }
         .padding(.vertical, 7)
-        // P6 adds expandable inline actions, state and event details here.
     }
 }

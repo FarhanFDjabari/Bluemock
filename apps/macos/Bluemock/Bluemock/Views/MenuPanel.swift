@@ -3,6 +3,7 @@ import AppKit
 
 struct MenuPanel: View {
     @Bindable var store: DeviceStore
+    @State private var expandedDeviceID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -17,12 +18,20 @@ struct MenuPanel: View {
                         ForEach(store.devices) { device in
                             DeviceRow(device: device, process: store.processes[device.id],
                                       start: { store.start(device.id) },
-                                      stop: { Task { await store.stop(device.id) } })
+                                      stop: { Task { await store.stop(device.id) } },
+                                      isExpanded: expandedDeviceID == device.id,
+                                      toggleExpanded: {
+                                          expandedDeviceID = expandedDeviceID == device.id ? nil : device.id
+                                      })
+                            if expandedDeviceID == device.id {
+                                DeviceDetail(process: store.processes[device.id])
+                                    .transition(.opacity)
+                            }
                             if device.id != store.devices.last?.id { Divider() }
                         }
                     }
                 }
-                .frame(maxHeight: 360)
+                .frame(maxHeight: 500)
             }
 
             Divider()
@@ -52,7 +61,7 @@ struct MenuPanel: View {
             }
         }
         .padding(14)
-        .frame(width: 360)
+        .frame(minWidth: 360, maxWidth: 360, maxHeight: 600)
         .task {
             await store.refresh()
             await store.startAutostartIfNeeded()
