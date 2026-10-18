@@ -5,6 +5,7 @@ struct MenuPanel: View {
     @Bindable var store: DeviceStore
     @Environment(\.openWindow) private var openWindow
     @State private var expandedDeviceID: String?
+    @State private var listHeight: CGFloat = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -14,27 +15,17 @@ struct MenuPanel: View {
             } else if store.devices.isEmpty {
                 emptyState
             } else {
+                // MenuBarExtra windows size to content, and maxHeight frames grow to fill the
+                // offered height, so size the scroll area from the measured list height instead.
                 ScrollView {
-                    VStack(spacing: 2) {
-                        ForEach(store.devices) { device in
-                            DeviceRow(device: device, process: store.processes[device.id],
-                                      start: { store.start(device.id) },
-                                      stop: { Task { await store.stop(device.id) } },
-                                      isExpanded: expandedDeviceID == device.id,
-                                      toggleExpanded: {
-                                          expandedDeviceID = expandedDeviceID == device.id ? nil : device.id
-                                      },
-                                      restartNeeded: store.restartRequired.contains(device.id),
-                                      restart: { Task { await store.restart(device.id) } })
-                            if expandedDeviceID == device.id {
-                                DeviceDetail(process: store.processes[device.id])
-                                    .transition(.opacity)
-                            }
-                            if device.id != store.devices.last?.id { Divider() }
+                    deviceList.background {
+                        GeometryReader { proxy in
+                            Color.clear.preference(key: ListHeightPreference.self, value: proxy.size.height)
                         }
                     }
                 }
-                .frame(maxHeight: 500)
+                .frame(height: min(listHeight, Self.maxListHeight))
+                .onPreferenceChange(ListHeightPreference.self) { listHeight = $0 }
             }
 
             Divider()
@@ -63,10 +54,33 @@ struct MenuPanel: View {
             }
         }
         .padding(14)
-        .frame(minWidth: 360, maxWidth: 360, maxHeight: 600)
+        .frame(width: 360)
         .task {
             await store.refresh()
             await store.startAutostartIfNeeded()
+        }
+    }
+
+    private static let maxListHeight: CGFloat = 500
+
+    private var deviceList: some View {
+        VStack(spacing: 2) {
+            ForEach(store.devices) { device in
+                DeviceRow(device: device, process: store.processes[device.id],
+                          start: { store.start(device.id) },
+                          stop: { Task { await store.stop(device.id) } },
+                          isExpanded: expandedDeviceID == device.id,
+                          toggleExpanded: {
+                              expandedDeviceID = expandedDeviceID == device.id ? nil : device.id
+                          },
+                          restartNeeded: store.restartRequired.contains(device.id),
+                          restart: { Task { await store.restart(device.id) } })
+                if expandedDeviceID == device.id {
+                    DeviceDetail(process: store.processes[device.id])
+                        .transition(.opacity)
+                }
+                if device.id != store.devices.last?.id { Divider() }
+            }
         }
     }
 
@@ -113,4 +127,9 @@ struct MenuPanel: View {
         }
         .padding(.vertical, 12)
     }
+}
+
+private struct ListHeightPreference: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
