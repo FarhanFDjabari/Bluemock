@@ -98,7 +98,9 @@ def _parser():
     selftest = commands.add_parser("selftest")
     selftest.add_argument("definition", metavar="X")
     selftest.add_argument("--json", action="store_true")
-    # P3 replaces the IPC placeholder and registers doctor here.
+    doctor = commands.add_parser("doctor")
+    doctor.add_argument("--json", action="store_true")
+    doctor.add_argument("--fix", action="store_true")
     return parser
 
 
@@ -149,16 +151,26 @@ def _copy(args):
 
 def _dispatch(args):
     if args.command == "run":
-        if args.ipc:
-            print("--ipc is not implemented until P3", file=sys.stderr)
-            return 2
         definition = schema.load(paths.resolve(args.definition))
+        if args.ipc:
+            from .ipc import run_ipc
+            return asyncio.run(run_ipc(definition, args.transport, args.name))
         if args.name is not None:
             if not args.name.strip():
                 raise ValueError("Advertised name cannot be empty")
             definition = replace(definition, name=args.name)
         from .repl import run
         return asyncio.run(run(definition, args.transport))
+    elif args.command == "doctor":
+        from .doctor import doctor
+        result = doctor(fix=args.fix)
+        if args.json:
+            _print(result, True)
+        else:
+            for check in result["checks"]:
+                suffix = f" | Fix: {check['fix']}" if "fix" in check else ""
+                print(f"{'OK' if check['ok'] else 'FAIL'}\t{check['id']}\t{check['detail']}{suffix}")
+        return 0 if result["ok"] else 1
     elif args.command == "selftest":
         from .selftest import selftest
         try:

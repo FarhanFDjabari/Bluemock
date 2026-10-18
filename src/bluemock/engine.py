@@ -6,6 +6,7 @@ os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
 
 import asyncio
 import copy
+import math
 import re
 from datetime import datetime, timezone
 
@@ -256,7 +257,7 @@ class Engine:
             self.error(exc)
             return False
 
-    async def set_state(self, values):
+    async def set_state(self, values, *, literal=False):
         try:
             async with self._lock:
                 if not isinstance(values, dict):
@@ -264,7 +265,14 @@ class Engine:
                 for key in values:
                     if key not in self.definition.state:
                         raise ValueError(f"Unknown state variable: {key}")
-                updates = {key: compile_expression(value).evaluate(self.state) for key, value in values.items()}
+                if literal:
+                    for key, value in values.items():
+                        if type(value) not in (str, int, float, bool) or (
+                                type(value) is float and not math.isfinite(value)):
+                            raise ValueError(f"{key}: state literals must be finite numbers, strings or booleans")
+                    updates = copy.deepcopy(values)
+                else:
+                    updates = {key: compile_expression(value).evaluate(self.state) for key, value in values.items()}
                 self.state.update(updates)
                 self.emit("state", values=copy.deepcopy(self.state))
             return True
