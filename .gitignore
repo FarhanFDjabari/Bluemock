@@ -1,0 +1,10 @@
+.venv/
+venv/
+__pycache__/
+*.egg-info/
+build/
+dist/
+.DS_Store
+apps/macos/build/
+DerivedData/
+xcuserdata/

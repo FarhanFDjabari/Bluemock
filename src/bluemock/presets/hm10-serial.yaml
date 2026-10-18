@@ -1,0 +1,29 @@
+# Schema version and advertised identity. Change the name for your app's device filter.
+bluemock: 1
+id: hm10-serial
+name: BM-HM10
+description: HM-10 BLE serial service with write echo and a text send action
+
+# HM-10 serial data uses one characteristic for writes and notifications.
+services:
+  - uuid: FFE0
+    characteristics:
+      - id: serial
+        uuid: FFE1
+        properties: [notify, write_without_response]
+
+# Echo every write. The text variable is the original, untrimmed write text.
+rules:
+  - on_write: serial
+    any: true
+    reply: {characteristic: serial, text: "{text}"}
+
+# Actions become commands and GUI buttons. Templates can use action parameters.
+actions:
+  - id: send
+    label: Send text
+    params:
+      - name: message
+        type: string
+        default: hello
+    send: {characteristic: serial, text: "{message}\r\n"}

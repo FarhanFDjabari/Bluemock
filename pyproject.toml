@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bluemock"
+version = "0.1.0"
+description = "Configurable BLE peripherals for the Android emulator"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["bumble[android]==0.0.236", "pyyaml>=6"]
+
+[project.scripts]
+bluemock = "bluemock.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bluemock"]
+
+[tool.hatch.build]
+include = ["src/bluemock/**/*.py", "src/bluemock/presets/*.yaml", "README.md", "scripts/install.sh"]
